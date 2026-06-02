@@ -2,7 +2,7 @@
 
     python src/scheduler.py
 
-Triggers fetch -> translate -> sentiment -> topic assign on an interval,
+Triggers fetch -> sentiment -> topic assign on an interval,
 plus one immediate run on startup. Ctrl-C to stop.
 """
 
@@ -52,7 +52,6 @@ def main() -> None:
         trigger="interval",
         hours=INTERVAL_HOURS,
         id="news_pipeline",
-        next_run_time=None,  # set below for an immediate first run
     )
     scheduler.add_job(
         _retention_job,

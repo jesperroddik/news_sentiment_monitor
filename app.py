@@ -1,9 +1,10 @@
-"""Streamlit dashboard for the Danish News Sentiment Monitor.
+"""Streamlit-dashboard til Dansk Nyhedssentiment-monitor.
 
     streamlit run app.py
 
-Reads directly from Neon (no local state) and expects the pipeline columns
-(translated_title, sentiment_score, sentiment_label, topic_id) to be populated.
+Læser direkte fra Neon (ingen lokal tilstand) og forventer, at pipeline-kolonnerne
+(sentiment_score, sentiment_label, topic_id) er udfyldt. Sentiment scores på den
+oprindelige danske tekst, så dashboardet viser ikke den engelske oversættelse.
 """
 
 from __future__ import annotations
@@ -14,19 +15,25 @@ from pathlib import Path
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+from wordcloud import WordCloud
 
-# Make src/ importable so we can reuse the shared engine.
+# Gør src/ importerbar, så vi kan genbruge den delte engine.
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 import db  # noqa: E402
+import topics  # noqa: E402
 
-st.set_page_config(page_title="Danish News Sentiment Monitor", layout="wide")
+st.set_page_config(page_title="Dansk Nyhedssentiment-monitor", layout="wide")
+
+# DB-værdier (engelske) -> danske visningsetiketter.
+SENTIMENT_DA = {"positive": "Positiv", "neutral": "Neutral", "negative": "Negativ"}
+SENTIMENT_FARVER = {"Positiv": "#2ca02c", "Neutral": "#7f7f7f", "Negativ": "#d62728"}
 
 
 @st.cache_data(ttl=600)
 def load_articles() -> pd.DataFrame:
-    """Pull all articles into a DataFrame (cached for 10 min)."""
+    """Hent alle artikler til en DataFrame (cachet i 10 min)."""
     query = """
-        SELECT id, source, title, translated_title, summary,
+        SELECT id, source, title, summary,
                url, published_at, sentiment_score, sentiment_label,
                topic_id, fetched_at
         FROM articles
@@ -37,31 +44,47 @@ def load_articles() -> pd.DataFrame:
     return df
 
 
-st.title("🇩🇰 Danish News Sentiment Monitor")
-st.caption("Topic tracking & sentiment analysis across DR, TV2, Berlingske and Politiken.")
+@st.cache_data(ttl=600)
+def topic_clouds(n: int = 40) -> dict[int, object]:
+    """Render a word-cloud image per LDA topic from its term weights."""
+    images: dict[int, object] = {}
+    for tid, freqs in topics.topic_term_weights(n).items():
+        if not freqs:
+            continue
+        wc = WordCloud(
+            width=480, height=320, background_color="white",
+            colormap="viridis", prefer_horizontal=0.9,
+        ).generate_from_frequencies(freqs)
+        images[tid] = wc.to_array()
+    return images
+
+
+st.title("🇩🇰 Dansk Nyhedssentiment-monitor")
+st.caption("Emnesporing og sentimentanalyse på tværs af DR, Politiken og Information.")
 
 df = load_articles()
 if df.empty:
-    st.warning("No articles yet. Run `python src/fetch.py` to populate the database.")
+    st.warning("Ingen artikler endnu. Kør `python src/fetch.py` for at fylde databasen.")
     st.stop()
 
-# --- Sidebar filters -------------------------------------------------------
-st.sidebar.header("Filters")
+# --- Sidebjælke-filtre -----------------------------------------------------
+st.sidebar.header("Filtre")
 
 min_date = df["published_at"].min()
 max_date = df["published_at"].max()
 date_range = st.sidebar.date_input(
-    "Date range",
+    "Datointerval",
     value=(min_date.date(), max_date.date()) if pd.notna(min_date) else None,
 )
 sources = st.sidebar.multiselect(
-    "Source", sorted(df["source"].dropna().unique()), default=None
+    "Kilde", sorted(df["source"].dropna().unique()), default=None
 )
 labels = st.sidebar.multiselect(
-    "Sentiment", ["positive", "neutral", "negative"], default=None
+    "Stemning", ["positive", "neutral", "negative"], default=None,
+    format_func=lambda x: SENTIMENT_DA[x],
 )
 topics = st.sidebar.multiselect(
-    "Topic", sorted(df["topic_id"].dropna().unique().astype(int)), default=None
+    "Emne", sorted(df["topic_id"].dropna().unique().astype(int)), default=None
 )
 
 mask = pd.Series(True, index=df.index)
@@ -77,73 +100,80 @@ if topics:
 
 fdf = df[mask]
 
-# --- KPI cards -------------------------------------------------------------
+# --- Nøgletal --------------------------------------------------------------
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("Articles", f"{len(fdf):,}")
+c1.metric("Artikler", f"{len(fdf):,}")
 avg = fdf["sentiment_score"].mean()
-c2.metric("Avg sentiment", f"{avg:+.3f}" if pd.notna(avg) else "—")
-c3.metric("Topics", int(fdf["topic_id"].nunique()))
-c4.metric("Sources", int(fdf["source"].nunique()))
+c2.metric("Gns. stemning", f"{avg:+.3f}" if pd.notna(avg) else "—")
+c3.metric("Emner", int(fdf["topic_id"].nunique()))
+c4.metric("Kilder", int(fdf["source"].nunique()))
 
 st.divider()
 
-# --- Sentiment trend over time --------------------------------------------
-st.subheader("Sentiment trend")
-trend = (
-    fdf.dropna(subset=["published_at", "sentiment_score"])
-    .set_index("published_at")
-    .groupby([pd.Grouper(freq="D"), "source"])["sentiment_score"]
-    .mean()
-    .reset_index()
-)
-if not trend.empty:
-    fig = px.line(
-        trend, x="published_at", y="sentiment_score", color="source",
-        markers=True, labels={"sentiment_score": "Avg sentiment", "published_at": "Date"},
-    )
-    fig.add_hline(y=0, line_dash="dot", opacity=0.4)
-    st.plotly_chart(fig, use_container_width=True)
+# --- Emneskyer (ordsky pr. emne) -------------------------------------------
+st.subheader("Emneskyer")
+st.caption("Mest karakteristiske ord pr. emne fra LDA-modellen (dansk korpus).")
+clouds = topic_clouds()
+if clouds:
+    per_row = 3
+    tids = sorted(clouds)
+    for i in range(0, len(tids), per_row):
+        row = st.columns(per_row)
+        for col, tid in zip(row, tids[i : i + per_row]):
+            col.image(clouds[tid], caption=f"Emne {tid}", use_container_width=True)
 else:
-    st.info("Not enough scored data to plot a trend.")
+    st.info("Ingen emnemodel endnu. Kør topic-trinet for at generere emner.")
 
-# --- Topic distribution + source comparison -------------------------------
+# --- Emnefordeling + kildesammenligning ------------------------------------
 left, right = st.columns(2)
 with left:
-    st.subheader("Topic distribution")
+    st.subheader("Emnefordeling")
     topic_counts = fdf["topic_id"].dropna().astype(int).value_counts().sort_index()
     if not topic_counts.empty:
         fig = px.bar(
             x=topic_counts.index.astype(str), y=topic_counts.values,
-            labels={"x": "Topic", "y": "Articles"},
+            labels={"x": "Emne", "y": "Artikler"},
         )
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("No topic assignments yet.")
+        st.info("Ingen emnetildelinger endnu.")
 
 with right:
-    st.subheader("Sentiment by source")
+    st.subheader("Stemning pr. kilde")
     by_source = (
         fdf.dropna(subset=["sentiment_label"])
         .groupby(["source", "sentiment_label"]).size().reset_index(name="count")
     )
     if not by_source.empty:
+        by_source["Stemning"] = by_source["sentiment_label"].map(SENTIMENT_DA)
         fig = px.bar(
-            by_source, x="source", y="count", color="sentiment_label",
+            by_source, x="source", y="count", color="Stemning",
             barmode="group",
-            color_discrete_map={"positive": "#2ca02c", "neutral": "#7f7f7f", "negative": "#d62728"},
+            labels={"source": "Kilde", "count": "Antal"},
+            color_discrete_map=SENTIMENT_FARVER,
         )
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("No labelled data yet.")
+        st.info("Ingen mærkede data endnu.")
 
-# --- Article table ---------------------------------------------------------
-st.subheader("Articles")
+# --- Artikeltabel ----------------------------------------------------------
+st.subheader("Artikler")
+table = fdf.copy()
+table["stemning"] = table["sentiment_label"].map(SENTIMENT_DA)
 st.dataframe(
-    fdf[
-        ["published_at", "source", "title", "translated_title",
-         "sentiment_score", "sentiment_label", "topic_id", "url"]
+    table[
+        ["published_at", "source", "title",
+         "sentiment_score", "stemning", "topic_id", "url"]
     ],
     use_container_width=True,
     hide_index=True,
-    column_config={"url": st.column_config.LinkColumn("Link")},
+    column_config={
+        "published_at": st.column_config.DatetimeColumn("Udgivet", format="YYYY-MM-DD HH:mm"),
+        "source": "Kilde",
+        "title": "Overskrift",
+        "sentiment_score": st.column_config.NumberColumn("Stemningsscore", format="%.3f"),
+        "stemning": "Stemning",
+        "topic_id": "Emne",
+        "url": st.column_config.LinkColumn("Link"),
+    },
 )

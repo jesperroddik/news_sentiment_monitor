@@ -1,7 +1,7 @@
 """RSS collection + one-off pipeline entry point.
 
 Running ``python src/fetch.py`` performs the full one-off pipeline:
-    fetch -> translate -> sentiment -> topic assign -> store.
+    fetch -> sentiment -> topic assign -> store.
 
 ``run_pipeline()`` is reused by ``scheduler.py`` for the periodic job.
 """
@@ -146,18 +146,16 @@ def store_articles(articles: list[dict]) -> int:
 
 
 def run_pipeline() -> None:
-    """Full one-off pipeline: fetch -> translate -> sentiment -> topic assign."""
+    """Full one-off pipeline: fetch -> sentiment -> topic assign."""
     # Imported lazily so each stage can be developed/run in isolation.
     import sentiment
     import topics
-    import translate
 
     check_sources()
     inserted = store_articles(fetch_feeds())
     if inserted == 0:
         print("[pipeline] no new articles; running NLP on any pending rows anyway")
 
-    translate.translate_pending()
     sentiment.score_pending()
     topics.assign_pending()
     print("[pipeline] done")
