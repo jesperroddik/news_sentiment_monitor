@@ -19,11 +19,15 @@ from sqlalchemy import text
 import db
 
 # RSS feeds (free, no key required). source label -> feed URL.
+# TV2 and Berlingske dropped their public RSS feeds (feeds.tv2.dk no longer
+# resolves; berlingske.dk/rss resets the connection) and are not indexed by
+# NewsAPI's free tier either, so they are currently unavailable. Kristeligt
+# Dagblad publishes no discoverable feed. DR, Politiken, and Information all
+# serve working RSS.
 RSS_FEEDS: dict[str, str] = {
     "DR": "https://www.dr.dk/nyheder/service/feeds/allenyheder",
-    "TV2": "https://feeds.tv2.dk/news/rss",
-    "Berlingske": "https://www.berlingske.dk/rss",
     "Politiken": "https://politiken.dk/rss/senestenyt.rss",
+    "Information": "https://www.information.dk/feed",
 }
 
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -53,8 +57,16 @@ def fetch_feeds(feeds: dict[str, str] = RSS_FEEDS) -> list[dict]:
     articles: list[dict] = []
     for source, url in feeds.items():
         parsed = feedparser.parse(url)
+        if not parsed.entries:
+            # Zero entries means a dead host/path (DNS failure, connection
+            # reset, moved feed), not a quiet news day — surface it loudly so
+            # it isn't mistaken for normal operation.
+            reason = getattr(parsed, "bozo_exception", None) or "no entries returned"
+            print(f"[error] {source}: feed returned 0 entries ({reason}); "
+                  f"contributed nothing — check URL: {url}")
+            continue
         if parsed.bozo:
-            print(f"[warn] {source}: feed parse issue: {parsed.bozo_exception}")
+            print(f"[warn] {source}: feed parsed with issues: {parsed.bozo_exception}")
         for entry in parsed.entries:
             link = getattr(entry, "link", None)
             title = clean_text(getattr(entry, "title", None))
@@ -73,10 +85,31 @@ def fetch_feeds(feeds: dict[str, str] = RSS_FEEDS) -> list[dict]:
     return articles
 
 
-def fetch_newsapi() -> list[dict]:
-    """Optional NewsAPI.org source. Not wired up yet (RSS-only for now)."""
-    # TODO: collect via NewsAPI.org (language='da'), respecting 100 req/day.
-    return []
+def check_sources() -> dict[str, bool]:
+    """Ping every configured feed and report which are reachable.
+
+    Run at start-up so a dead feed surfaces immediately rather than silently
+    contributing zero articles. Returns ``{source: healthy?}``. Raises
+    ``RuntimeError`` if *every* feed is down — there is nothing to do.
+    """
+    status: dict[str, bool] = {}
+    print("[startup] checking sources...")
+
+    for source, url in RSS_FEEDS.items():
+        parsed = feedparser.parse(url)
+        ok = bool(parsed.entries)
+        status[source] = ok
+        if ok:
+            print(f"  [ok]   {source}: {len(parsed.entries)} entries")
+        else:
+            reason = getattr(parsed, "bozo_exception", None) or "no entries"
+            print(f"  [DEAD] {source}: {reason} ({url})")
+
+    healthy = sum(status.values())
+    print(f"[startup] {healthy}/{len(status)} sources healthy")
+    if healthy == 0:
+        raise RuntimeError("No healthy news sources — aborting pipeline.")
+    return status
 
 
 def store_articles(articles: list[dict]) -> int:
@@ -119,6 +152,7 @@ def run_pipeline() -> None:
     import topics
     import translate
 
+    check_sources()
     inserted = store_articles(fetch_feeds())
     if inserted == 0:
         print("[pipeline] no new articles; running NLP on any pending rows anyway")

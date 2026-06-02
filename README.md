@@ -24,7 +24,7 @@ Built with a media monitoring background in mind, the project answers:
 
 | Category | Tool / Technology | Purpose |
 |---|---|---|
-| Data Collection | RSS feeds (`feedparser`) + NewsAPI.org | Pull headlines and summaries from DR, TV2, Berlingske, Politiken |
+| Data Collection | RSS feeds (`feedparser`) | Pull headlines and summaries from DR, Politiken, Information |
 | Data Storage | PostgreSQL (Neon serverless) | Persist all articles, translations, scores, and topic assignments |
 | Translation | DeepL API (free tier) | Translate Danish text to English before NLP processing |
 | Sentiment Analysis | VADER (`vaderSentiment`) | Sentence-level sentiment scoring (positive / neutral / negative) |
@@ -48,7 +48,7 @@ danish-news-sentiment/
 │   └── analysis_queries.sql     # Business queries for dashboard
 ├── src/
 │   ├── db.py                    # Neon/PostgreSQL connection helper
-│   ├── fetch.py                 # RSS + NewsAPI collector
+│   ├── fetch.py                 # RSS collector + start-up source health check
 │   ├── translate.py             # DeepL translation pipeline
 │   ├── sentiment.py             # VADER scoring logic
 │   ├── topics.py                # LDA model training and inference
@@ -78,8 +78,9 @@ Copy `.env.example` to `.env` and fill in your keys:
 ```
 DATABASE_URL=postgresql://user:password@ep-xxx.neon.tech/neondb?sslmode=require
 DEEPL_API_KEY=your-deepl-free-api-key
-NEWS_API_KEY=your-newsapi-org-key   # optional
 ```
+
+> `NEWS_API_KEY` is no longer required — all sources are collected via RSS.
 
 ### 3. Set up the database
 
@@ -108,7 +109,7 @@ Follow these phases in order. Each builds on the last.
 
 | Phase | Task | Description |
 |---|---|---|
-| 01 | RSS + NewsAPI setup | Identify RSS feed URLs for DR, TV2, Berlingske, and Politiken. Write `src/fetch.py` using `feedparser` to pull headlines, publication date, source, and summary. |
+| 01 | RSS setup | Identify working RSS feed URLs for DR, Politiken, and Information. Write `src/fetch.py` using `feedparser` to pull headlines, publication date, source, and summary, with a start-up health check that flags dead feeds. |
 | 02 | Database schema | Create a free Neon project. Write `schema.sql` with an `articles` table. Add columns for `translated_title`, `sentiment_score`, `sentiment_label`, and `topic_id`. |
 | 03 | ETL pipeline | Extend fetch to deduplicate on URL, clean text (strip HTML, normalise whitespace), and load into Neon. Verify row counts. |
 | 04 | Translation layer | Write `src/translate.py` to call the DeepL free API. Store translations back to Neon. Add rate-limit handling and batch requests to stay within the free quota (500k chars/month). |
@@ -138,13 +139,14 @@ Follow these phases in order. Each builds on the last.
 | Source | RSS URL | Notes |
 |---|---|---|
 | DR | `https://www.dr.dk/nyheder/service/feeds/allenyheder` | Danish public broadcaster |
-| TV2 | `https://feeds.tv2.dk/news/rss` | Second major public outlet |
-| Berlingske | `https://www.berlingske.dk/rss` | Centre-right broadsheet |
 | Politiken | `https://politiken.dk/rss/senestenyt.rss` | Centre-left broadsheet |
+| Information | `https://www.information.dk/feed` | Independent daily |
 
-### NewsAPI.org (optional, free tier)
-- 100 requests/day, headlines + snippets
-- Supports filtering by language (`da`) and source
+`fetch.py` runs a start-up health check (`check_sources()`) that pings each feed and aborts if all are unreachable, so a dead feed surfaces immediately instead of silently contributing zero articles.
+
+### Sources without a usable feed
+
+TV2 and Berlingske discontinued their public RSS feeds (`feeds.tv2.dk` no longer resolves; `berlingske.dk/rss` resets the connection), and Kristeligt Dagblad publishes no discoverable feed. NewsAPI.org was evaluated as a fallback for these outlets but its free tier returns almost no Danish coverage, so it is not used. These sources are currently omitted.
 
 ---
 
