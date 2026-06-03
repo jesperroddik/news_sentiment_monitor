@@ -139,6 +139,20 @@ def topic_term_weights(n: int = 40) -> dict[int, dict[str, float]]:
     }
 
 
+def topic_labels(n: int = 3, sep: str = " · ") -> dict[int, str]:
+    """Human-readable label per topic: its top-``n`` terms joined with ``sep``.
+
+    Derived from the saved model's term weights, so labels regenerate
+    automatically on every retrain — when a story takes a new turn, the next
+    ``train_model`` shifts the top terms and the names follow. Returns ``{}``
+    if no model exists yet.
+    """
+    return {
+        tid: sep.join(list(freqs)[:n])
+        for tid, freqs in topic_term_weights(n).items()
+    }
+
+
 def assign_pending() -> int:
     """Assign topic_id to articles missing one. Trains a model if none exists."""
     model = _load_model()
