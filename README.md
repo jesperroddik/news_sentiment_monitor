@@ -5,14 +5,14 @@
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Neon-4169E1?logo=postgresql&logoColor=white)
 ![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?logo=streamlit&logoColor=white)
 ![Transformers](https://img.shields.io/badge/%F0%9F%A4%97%20Transformers-FFD21E?logoColor=black)
-![scikit-learn](https://img.shields.io/badge/scikit--learn-LDA-F7931E?logo=scikit-learn&logoColor=white)
+![scikit-learn](https://img.shields.io/badge/scikit--learn-NMF%20%2B%20TF--IDF-F7931E?logo=scikit-learn&logoColor=white)
 ![Git](https://img.shields.io/badge/Git-F05032?logo=git&logoColor=white)
 
 ---
 
 ## Project Overview
 
-An end-to-end NLP and data pipeline project that collects headlines and article summaries from major Danish news sources in near real-time, performs sentiment analysis and LDA topic modelling **directly on the Danish text**, and presents the results in an interactive Streamlit dashboard.
+An end-to-end NLP and data pipeline project that collects headlines and article summaries from major Danish news sources in near real-time, performs sentiment analysis and topic modelling (NMF over TF-IDF, on lemmatized Danish text) **directly on the Danish text**, and presents the results in an interactive Streamlit dashboard.
 
 Built with a media monitoring background in mind, the project answers:
 
@@ -27,7 +27,7 @@ Built with a media monitoring background in mind, the project answers:
 | Data Collection | RSS feeds (`feedparser`) | Pull headlines and summaries from DR, Politiken, Information |
 | Data Storage | PostgreSQL (Neon serverless) | Persist all articles, scores, and topic assignments |
 | Sentiment Analysis | Danish transformer (`transformers`) | Sentiment scoring on the original Danish text (positive / neutral / negative) |
-| Topic Modelling | LDA (`scikit-learn`) | Identify recurring topic clusters across articles |
+| Topic Modelling | NMF over TF-IDF (`scikit-learn`) + `simplemma` lemmatizer | Identify recurring topic clusters across articles |
 | Dashboard | Streamlit + Plotly | Interactive web app for exploration, filtering, and trend tracking |
 | Scheduling | APScheduler | Automatically fetch new articles every 1–2 hours |
 | Version Control | Git / GitHub | All code, SQL, and notebooks versioned publicly |
@@ -39,7 +39,7 @@ Built with a media monitoring background in mind, the project answers:
 
 ```
 danish-news-sentiment/
-├── data/                        # Local CSV snapshots (optional)
+├── data/                        # danish_stopwords.txt (custom Danish stop-word list)
 ├── notebooks/
 │   └── 01_exploration.ipynb     # EDA: topic distributions, sentiment patterns
 ├── sql/
@@ -49,7 +49,7 @@ danish-news-sentiment/
 │   ├── db.py                    # Neon/PostgreSQL connection helper
 │   ├── fetch.py                 # RSS collector + start-up source health check
 │   ├── sentiment.py             # Danish transformer sentiment scoring
-│   ├── topics.py                # LDA model training and inference (Danish)
+│   ├── topics.py                # NMF + TF-IDF topic model (lemmatized Danish)
 │   └── scheduler.py             # APScheduler job definitions
 ├── app.py                       # Streamlit dashboard
 ├── requirements.txt
@@ -110,9 +110,9 @@ Follow these phases in order. Each builds on the last.
 | 02 | Database schema | Create a free Neon project. Write `schema.sql` with an `articles` table. Add columns for `sentiment_score`, `sentiment_label`, and `topic_id`. |
 | 03 | ETL pipeline | Extend fetch to deduplicate on URL, clean text (strip HTML, normalise whitespace), and load into Neon. Verify row counts. |
 | 04 | Sentiment scoring | Write `src/sentiment.py` using a fine-tuned Danish transformer (Hugging Face). Score each Danish headline + summary directly. Store score (−1 to +1) and a label (positive / neutral / negative) back to Neon. |
-| 05 | LDA topic modelling | In `src/topics.py`, load all Danish text from Neon, preprocess (tokenise, remove Danish stopwords), and train an LDA model. Experiment with k=5–10 topics. Assign topic IDs back to each article and save the fitted model as a `.pkl` file. |
+| 05 | Topic modelling | In `src/topics.py`, load all Danish text from Neon, preprocess (lemmatize with `simplemma`, remove Danish stopwords), and fit NMF over a TF-IDF matrix (`k=5`, `min_df=3`). Assign topic IDs back to each article, derive top-term topic names, and save the fitted vectorizer+model as a `.pkl` file. |
 | 06 | EDA notebook | In `notebooks/01_exploration.ipynb`, explore topic distributions over time, sentiment by source, most common topic terms, and source-tone correlation. |
-| 07 | Streamlit dashboard | Build `app.py` with KPI cards, per-topic word clouds, topic distribution bar chart, source comparison view, and a filterable article table with sentiment labels. |
+| 07 | Streamlit dashboard | Build `app.py` with KPI cards, per-topic word clouds with top-term names, topic distribution bar chart, source comparison view, a source×topic mean-sentiment heatmap, and a filterable article table with sentiment labels. |
 | 08 | Scheduling | Add APScheduler to `src/scheduler.py` to trigger the full pipeline (fetch → sentiment → topic assign) every 2 hours. |
 | 09 | Documentation | Write a clean README, comment your SQL, and add a short project write-up. Push everything to GitHub. |
 
@@ -160,6 +160,7 @@ transformers
 sentencepiece
 scikit-learn
 nltk
+simplemma
 streamlit
 plotly
 wordcloud
@@ -174,9 +175,9 @@ joblib
 This project runs NLP **directly on Danish** — there is no translation step:
 
 - **Sentiment** uses a fine-tuned Danish transformer (Hugging Face `transformers`), scoring the original `title`/`summary`. The 3-class model maps to a label and a −1..+1 score (`P(positive) − P(negative)`). The model (~0.4 GB) downloads on first run and is cached locally.
-- **Topic modelling** trains LDA on the raw Danish text, filtering Danish stop words (NLTK's Danish list, overridable via `data/danish_stopwords.txt`). Topic terms and word clouds are therefore Danish.
+- **Topic modelling** fits **NMF over a TF-IDF** view of the Danish text. Tokens are lemmatized to Danish base forms with `simplemma` (so inflected forms like `regeringen`/`regeringens` collapse onto `regering`), and Danish stop words are filtered — a union of NLTK's Danish list and an extended list in `data/danish_stopwords.txt`. NMF over TF-IDF was chosen over LDA because it yields sharper, more coherent topics on this small corpus of short headlines. Topic terms, word clouds, and the auto-generated top-term topic names are therefore Danish.
 
-An earlier design translated everything to English first (DeepL) so English-only tools like VADER could be used; that translate-first stage has since been removed in favour of native Danish models, which avoids translation drift and the external API dependency.
+An earlier design translated everything to English first (DeepL) so English-only tools like VADER could be used; that translate-first stage has since been removed in favour of native Danish models, which avoids translation drift and the external API dependency. Topic modelling likewise started as LDA over raw word counts before moving to NMF over TF-IDF on lemmatized tokens.
 
 ---
 
