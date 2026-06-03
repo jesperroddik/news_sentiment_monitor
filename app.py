@@ -59,6 +59,18 @@ def topic_clouds(n: int = 40) -> dict[int, object]:
     return images
 
 
+@st.cache_data(ttl=600)
+def topic_label_map(n: int = 3) -> dict[int, str]:
+    """Top-term label per topic_id, regenerated whenever the model is retrained."""
+    return topics.topic_labels(n)
+
+
+def label_for(tid) -> str:
+    """Display name for a topic_id, falling back to 'Emne N' if unlabelled."""
+    name = topic_label_map().get(int(tid))
+    return f"{int(tid)}: {name}" if name else f"Emne {int(tid)}"
+
+
 st.title("🇩🇰 Dansk Nyhedssentiment-monitor")
 st.caption("Emnesporing og sentimentanalyse på tværs af DR, Politiken og Information.")
 
@@ -83,8 +95,9 @@ labels = st.sidebar.multiselect(
     "Stemning", ["positive", "neutral", "negative"], default=None,
     format_func=lambda x: SENTIMENT_DA[x],
 )
-topics = st.sidebar.multiselect(
-    "Emne", sorted(df["topic_id"].dropna().unique().astype(int)), default=None
+selected_topics = st.sidebar.multiselect(
+    "Emne", sorted(df["topic_id"].dropna().unique().astype(int)), default=None,
+    format_func=label_for,
 )
 
 mask = pd.Series(True, index=df.index)
@@ -95,8 +108,8 @@ if sources:
     mask &= df["source"].isin(sources)
 if labels:
     mask &= df["sentiment_label"].isin(labels)
-if topics:
-    mask &= df["topic_id"].isin(topics)
+if selected_topics:
+    mask &= df["topic_id"].isin(selected_topics)
 
 fdf = df[mask]
 
@@ -120,7 +133,7 @@ if clouds:
     for i in range(0, len(tids), per_row):
         row = st.columns(per_row)
         for col, tid in zip(row, tids[i : i + per_row]):
-            col.image(clouds[tid], caption=f"Emne {tid}", use_container_width=True)
+            col.image(clouds[tid], caption=label_for(tid), use_container_width=True)
 else:
     st.info("Ingen emnemodel endnu. Kør topic-trinet for at generere emner.")
 
@@ -131,7 +144,7 @@ with left:
     topic_counts = fdf["topic_id"].dropna().astype(int).value_counts().sort_index()
     if not topic_counts.empty:
         fig = px.bar(
-            x=topic_counts.index.astype(str), y=topic_counts.values,
+            x=[label_for(t) for t in topic_counts.index], y=topic_counts.values,
             labels={"x": "Emne", "y": "Artikler"},
         )
         st.plotly_chart(fig, use_container_width=True)
@@ -156,14 +169,40 @@ with right:
     else:
         st.info("Ingen mærkede data endnu.")
 
+# --- Stemning pr. kilde og emne (matrix) -----------------------------------
+st.subheader("Stemning pr. kilde og emne")
+st.caption("Gennemsnitlig stemningsscore (−1 til +1) for hver kilde pr. emne.")
+heat = fdf.dropna(subset=["topic_id", "sentiment_score"]).copy()
+if not heat.empty:
+    heat["topic_id"] = heat["topic_id"].astype(int)
+    pivot = heat.pivot_table(
+        index="source", columns="topic_id", values="sentiment_score", aggfunc="mean"
+    ).sort_index(axis=1)
+    pivot.columns = [label_for(c) for c in pivot.columns]
+    fig = px.imshow(
+        pivot,
+        color_continuous_scale="RdYlGn",
+        zmin=-1, zmax=1,
+        aspect="auto",
+        text_auto=".2f",
+        labels={"x": "Emne", "y": "Kilde", "color": "Gns. stemning"},
+    )
+    fig.update_xaxes(type="category")
+    st.plotly_chart(fig, use_container_width=True)
+else:
+    st.info("Ingen stemningsdata pr. emne endnu.")
+
 # --- Artikeltabel ----------------------------------------------------------
 st.subheader("Artikler")
 table = fdf.copy()
 table["stemning"] = table["sentiment_label"].map(SENTIMENT_DA)
+table["emne"] = table["topic_id"].map(
+    lambda t: label_for(t) if pd.notna(t) else ""
+)
 st.dataframe(
     table[
         ["published_at", "source", "title",
-         "sentiment_score", "stemning", "topic_id", "url"]
+         "sentiment_score", "stemning", "emne", "url"]
     ],
     use_container_width=True,
     hide_index=True,
@@ -173,7 +212,7 @@ st.dataframe(
         "title": "Overskrift",
         "sentiment_score": st.column_config.NumberColumn("Stemningsscore", format="%.3f"),
         "stemning": "Stemning",
-        "topic_id": "Emne",
+        "emne": "Emne",
         "url": st.column_config.LinkColumn("Link"),
     },
 )
