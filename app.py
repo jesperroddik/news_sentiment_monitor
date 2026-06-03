@@ -72,7 +72,10 @@ def label_for(tid) -> str:
 
 
 st.title("🇩🇰 Dansk Nyhedssentiment-monitor")
-st.caption("Emnesporing og sentimentanalyse på tværs af DR, Politiken og Information.")
+st.caption(
+    "Emnesporing og sentimentanalyse på tværs af DR, Politiken, Information, "
+    "Jyllands-Posten, Berlingske og Kristeligt Dagblad."
+)
 
 df = load_articles()
 if df.empty:

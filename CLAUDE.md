@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Status
 
-This is a **Danish News Sentiment Monitor** — an end-to-end NLP pipeline collecting headlines from Danish news RSS feeds (DR, Politiken, Information), scoring sentiment and modelling topics (NMF over TF-IDF, on lemmatized text) **directly on the original Danish text**, and presenting results in a Streamlit dashboard. There is no translation step — all NLP runs on Danish. The README describes the full spec.
+This is a **Danish News Sentiment Monitor** — an end-to-end NLP pipeline collecting headlines from Danish news RSS feeds (DR, Politiken, Information, Jyllands-Posten, Berlingske, Kristeligt Dagblad), scoring sentiment and modelling topics (NMF over TF-IDF, on lemmatized text) **directly on the original Danish text**, and presenting results in a Streamlit dashboard. There is no translation step — all NLP runs on Danish. The README describes the full spec.
 
 ## Intended Repository Layout
 
@@ -55,4 +55,4 @@ The pipeline runs in this order: **fetch → sentiment → topic assign → stor
 
 - **All NLP runs on Danish**: both sentiment (Danish transformer) and topic modelling (NMF over TF-IDF on lemmatized Danish text, Danish stop words) operate on the Danish `title`/`summary`. There is no translation step or DeepL dependency — `translate.py` and the `translated_*` columns were removed.
 - **Neon connection**: Use `sslmode=require` in `DATABASE_URL`. Neon auto-suspends on inactivity; handle reconnect in `db.py`.
-- **Sources**: RSS-only (DR, Politiken, Information), no API key required. TV2 and Berlingske dropped their public feeds and Kristeligt Dagblad publishes none; NewsAPI was evaluated as a fallback but its free tier has near-zero Danish coverage, so it is not used. `NEWS_API_KEY` may exist in `.env` but is currently unused.
+- **Sources**: RSS-only (DR, Politiken, Information, Jyllands-Posten, Berlingske, Kristeligt Dagblad), no API key required. `RSS_FEEDS` maps each source to a *list* of feed URLs, since Jyllands-Posten exposes two (top-stories + latest-news); `store_articles()` dedups on URL. Berlingske's `next-api` "alle" feed declares us-ascii but serves utf-8, so feedparser flags `bozo` — benign, the entries parse fine. Kristeligt Dagblad's `/rss/nyheder` feed sends HTML-escaped summaries, so `clean_text()` unescapes **before** stripping tags (otherwise `<p>`/`dir`/`ltr` leak into the NLP). TV2's public feed no longer resolves; NewsAPI was evaluated as a fallback but its free tier has near-zero Danish coverage, so it is not used. `NEWS_API_KEY` may exist in `.env` but is currently unused.

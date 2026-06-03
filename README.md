@@ -24,7 +24,7 @@ Built with a media monitoring background in mind, the project answers:
 
 | Category | Tool / Technology | Purpose |
 |---|---|---|
-| Data Collection | RSS feeds (`feedparser`) | Pull headlines and summaries from DR, Politiken, Information |
+| Data Collection | RSS feeds (`feedparser`) | Pull headlines and summaries from DR, Politiken, Information, Jyllands-Posten, Berlingske, Kristeligt Dagblad |
 | Data Storage | PostgreSQL (Neon serverless) | Persist all articles, scores, and topic assignments |
 | Sentiment Analysis | Danish transformer (`transformers`) | Sentiment scoring on the original Danish text (positive / neutral / negative) |
 | Topic Modelling | NMF over TF-IDF (`scikit-learn`) + `simplemma` lemmatizer | Identify recurring topic clusters across articles |
@@ -137,12 +137,18 @@ Follow these phases in order. Each builds on the last.
 | DR | `https://www.dr.dk/nyheder/service/feeds/allenyheder` | Danish public broadcaster |
 | Politiken | `https://politiken.dk/rss/senestenyt.rss` | Centre-left broadsheet |
 | Information | `https://www.information.dk/feed` | Independent daily |
+| Jyllands-Posten | `https://newsletter-proxy.aws.jyllands-posten.dk/v1/top-stories/jyllands-posten.dk` | Major daily — top-stories feed |
+| Jyllands-Posten | `https://newsletter-proxy.aws.jyllands-posten.dk/v1/latestNewsRss/jyllands-posten.dk?count=10` | Major daily — latest-news feed |
+| Berlingske | `https://www.berlingske.dk/next-api/feeds/alle` | Conservative daily — declares us-ascii but serves utf-8 (benign `bozo` warning) |
+| Kristeligt Dagblad | `https://www.kristeligt-dagblad.dk/rss/nyheder` | Christian daily — summaries arrive HTML-escaped (`clean_text` unescapes then strips) |
+
+A single source may expose multiple feeds (Jyllands-Posten has both top-stories and latest-news), so `RSS_FEEDS` maps each source label to a *list* of feed URLs; `store_articles()` dedups on URL, so any overlap between a source's feeds is harmless.
 
 `fetch.py` runs a start-up health check (`check_sources()`) that pings each feed and aborts if all are unreachable, so a dead feed surfaces immediately instead of silently contributing zero articles.
 
 ### Sources without a usable feed
 
-TV2 and Berlingske discontinued their public RSS feeds (`feeds.tv2.dk` no longer resolves; `berlingske.dk/rss` resets the connection), and Kristeligt Dagblad publishes no discoverable feed. NewsAPI.org was evaluated as a fallback for these outlets but its free tier returns almost no Danish coverage, so it is not used. These sources are currently omitted.
+TV2 discontinued its public RSS feed (`feeds.tv2.dk` no longer resolves). (Berlingske's legacy `berlingske.dk/rss` was dead, and Kristeligt Dagblad was previously thought to publish no feed, but their `next-api` "alle" and `/rss/nyheder` feeds respectively work and are now included above.) NewsAPI.org was evaluated as a fallback for the remaining outlets but its free tier returns almost no Danish coverage, so it is not used. TV2 is currently omitted.
 
 ---
 
