@@ -125,7 +125,7 @@ st.divider()
 
 # --- Emneskyer (ordsky pr. emne) -------------------------------------------
 st.subheader("Emneskyer")
-st.caption("Mest karakteristiske ord pr. emne fra LDA-modellen (dansk korpus).")
+st.caption("Mest karakteristiske ord pr. emne fra emnemodellen (NMF, dansk korpus).")
 clouds = topic_clouds()
 if clouds:
     per_row = 3

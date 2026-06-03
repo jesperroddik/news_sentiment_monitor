@@ -1,10 +1,12 @@
-"""Topic modelling (LDA over the original Danish corpus).
+"""Topic modelling (NMF over a TF-IDF view of the original Danish corpus).
 
-``train_model`` fits a CountVectorizer (with Danish stop words) +
-LatentDirichletAllocation on the raw Danish ``title``/``summary`` and persists
-both to models/lda_model.pkl. ``assign_pending`` loads that model and writes the
-dominant topic_id back to articles that don't have one yet. Retrain periodically
-as the corpus grows.
+``train_model`` fits a TF-IDF vectorizer (lemmatized Danish tokens) + NMF on
+the raw Danish ``title``/``summary`` and persists both to models/lda_model.pkl.
+``assign_pending`` loads that model and writes the dominant topic_id back to
+articles that don't have one yet. Retrain periodically as the corpus grows.
+
+NMF over TF-IDF is used instead of LDA because it yields sharper, more coherent
+topics on this small corpus of short Danish headlines.
 """
 
 from __future__ import annotations
@@ -13,8 +15,8 @@ import functools
 from pathlib import Path
 
 import joblib
-from sklearn.decomposition import LatentDirichletAllocation
-from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.decomposition import NMF
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sqlalchemy import text
 
 import db
@@ -24,8 +26,8 @@ MODEL_PATH = _PROJECT_ROOT / "models" / "lda_model.pkl"
 # Optional override: one lowercase stop word per line ('#' for comments).
 STOPWORDS_PATH = _PROJECT_ROOT / "data" / "danish_stopwords.txt"
 
-# Number of topics. README suggests experimenting with k = 5..10.
-DEFAULT_K = 7
+# Number of topics. Fewer topics stay more coherent on a small corpus.
+DEFAULT_K = 5
 _MIN_DOCS = 10  # don't bother fitting LDA on a near-empty corpus
 
 
@@ -59,6 +61,37 @@ def danish_stopwords() -> list[str]:
     return sorted({w.lower() for w in words})
 
 
+@functools.lru_cache(maxsize=1)
+def _lemmatized_stopwords() -> frozenset[str]:
+    """Stop words plus their Danish lemmas, so filtering still matches after
+    the tokenizer lemmatizes the corpus (e.g. ``regeringen`` -> ``regering``)."""
+    import simplemma
+
+    base = danish_stopwords()
+    lemmas = {simplemma.lemmatize(w.lower(), lang="da").lower() for w in base}
+    return frozenset(set(base) | lemmas)
+
+
+def lemmatize_tokens(text_in: str) -> list[str]:
+    """CountVectorizer tokenizer: split, lemmatize to Danish base forms,
+    lowercase, and drop non-alphabetic tokens and (lemmatized) stop words.
+
+    Collapses inflected forms (definite ``-en/-et``, genitive ``-s``, plurals)
+    onto one term so LDA topics aren't fragmented across surface forms.
+    """
+    import simplemma
+
+    stops = _lemmatized_stopwords()
+    tokens: list[str] = []
+    for tok in simplemma.simple_tokenizer(text_in):
+        if not tok.isalpha():
+            continue
+        lemma = simplemma.lemmatize(tok.lower(), lang="da").lower()
+        if len(lemma) > 1 and lemma not in stops:
+            tokens.append(lemma)
+    return tokens
+
+
 def _build_corpus_text(title: str | None, summary: str | None) -> str:
     return f"{title or ''} {summary or ''}".strip()
 
@@ -78,31 +111,44 @@ def _load_all_docs() -> list[dict]:
 
 
 def train_model(k: int = DEFAULT_K, save: bool = True):
-    """Fit vectorizer + LDA on the full Danish corpus. Returns (vec, lda)."""
+    """Fit vectorizer + NMF on the full Danish corpus. Returns (vec, model)."""
     rows = _load_all_docs()
     docs = [_build_corpus_text(r["title"], r["summary"]) for r in rows]
     if len(docs) < _MIN_DOCS:
         raise RuntimeError(
-            f"Only {len(docs)} docs — need at least {_MIN_DOCS} to train LDA."
+            f"Only {len(docs)} docs — need at least {_MIN_DOCS} to train the model."
         )
 
-    vec, lda = fit_lda(docs, k=k)
+    vec, model = fit_topics(docs, k=k)
     if save:
         MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-        joblib.dump({"vectorizer": vec, "lda": lda, "k": k}, MODEL_PATH)
+        joblib.dump({"vectorizer": vec, "model": model, "k": k}, MODEL_PATH)
         print(f"[topics] saved model (k={k}) to {MODEL_PATH}")
-    return vec, lda
+    return vec, model
 
 
-def fit_lda(docs: list[str], k: int = DEFAULT_K):
-    """Pure fit helper (no DB) — usable in tests on an in-memory corpus."""
-    vec = CountVectorizer(stop_words=danish_stopwords(), max_df=0.95, min_df=2)
-    dtm = vec.fit_transform(docs)
-    lda = LatentDirichletAllocation(
-        n_components=k, learning_method="batch", random_state=42
+def fit_topics(docs: list[str], k: int = DEFAULT_K):
+    """Pure fit helper (no DB) — usable in tests on an in-memory corpus.
+
+    TF-IDF down-weights ubiquitous terms, and NMF factorises it into ``k``
+    additive parts, giving tighter topics than LDA on short headlines. Stop
+    words are filtered inside ``lemmatize_tokens`` (against lemmatized forms),
+    so no separate ``stop_words`` list is passed here. ``min_df=3`` drops the
+    long tail of words seen in only one or two articles.
+    """
+    vec = TfidfVectorizer(
+        tokenizer=lemmatize_tokens,
+        token_pattern=None,
+        lowercase=False,
+        max_df=0.9,
+        min_df=3,
     )
-    lda.fit(dtm)
-    return vec, lda
+    dtm = vec.fit_transform(docs)
+    model = NMF(
+        n_components=k, init="nndsvd", random_state=42, max_iter=400
+    )
+    model.fit(dtm)
+    return vec, model
 
 
 def top_terms(vec, lda, n: int = 10) -> dict[int, list[str]]:
@@ -118,7 +164,7 @@ def _load_model():
     if not MODEL_PATH.exists():
         return None
     bundle = joblib.load(MODEL_PATH)
-    return bundle["vectorizer"], bundle["lda"]
+    return bundle["vectorizer"], bundle["model"]
 
 
 def topic_term_weights(n: int = 40) -> dict[int, dict[str, float]]:
