@@ -177,8 +177,11 @@ def store_articles(articles: list[dict]) -> int:
     return len(new_rows)
 
 
-def run_pipeline() -> None:
-    """Full one-off pipeline: fetch -> store -> sentiment -> IPTC classify."""
+def run_pipeline() -> int:
+    """Full one-off pipeline: fetch -> store -> sentiment -> IPTC classify.
+
+    Returns the number of newly inserted articles.
+    """
     # Imported lazily so each stage can be developed/run in isolation.
     import iptc
     import scrape
@@ -192,6 +195,7 @@ def run_pipeline() -> None:
     sentiment.score_pending()
     iptc.classify_pending()   # IPTC top-level category — the topic axis
     print("[pipeline] done")
+    return inserted
 
 
 def main() -> None:
