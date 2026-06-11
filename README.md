@@ -29,6 +29,7 @@ Built with a media monitoring background in mind, the project answers:
 | Data Storage | PostgreSQL (Neon serverless) | Persist all articles, scores, and topic assignments |
 | Sentiment Analysis | Danish transformer (`transformers`) | Sentiment scoring on the original Danish text (positive / neutral / negative) |
 | Topic Classification | Multilingual sentence-transformer + cosine similarity (`sentence-transformers`) | Assign each article a fixed IPTC Media Topics category |
+| News Digest | Local LLM via **Ollama** (`gemma2:2b`) | One-sentence Danish digest of each top story in the dashboard's "Nyhedsoverblik" banner |
 | Word Clouds | TF-IDF (`scikit-learn`) + `simplemma` lemmatizer | Characteristic Danish terms per category |
 | Dashboard | Streamlit + Plotly | Interactive web app for exploration, filtering, and trend tracking |
 | Scheduling | APScheduler | Automatically fetch new articles every 1–2 hours |
@@ -51,6 +52,8 @@ danish-news-sentiment/
 │   ├── scrape.py                # HTML scrapers for DR and TV2 (parse embedded JSON)
 │   ├── sentiment.py             # Danish transformer sentiment scoring
 │   ├── iptc.py                  # IPTC category classification (embedding similarity)
+│   ├── digest.py                # One-sentence Danish story digest via a local LLM (Ollama)
+│   ├── overview.py              # Builds the "Nyhedsoverblik" snapshot (top stories + digests)
 │   ├── topics.py                # Danish lemmatizing tokenizer (shared text preprocessing)
 │   └── scheduler.py             # APScheduler job definitions
 ├── app.py                       # Streamlit dashboard
@@ -87,14 +90,27 @@ DATABASE_URL=postgresql://user:password@ep-xxx.neon.tech/neondb?sslmode=require
 psql $DATABASE_URL -f sql/schema.sql
 ```
 
-### 4. Run the first fetch and launch the dashboard
+### 4. (Optional) Install Ollama for the news digests
+
+The "Nyhedsoverblik" banner summarises each top story in one Danish sentence using a
+**local** LLM via [Ollama](https://ollama.com/download) — no external API. Install the
+Ollama app (it runs a `localhost:11434` service) and pull a small model:
+
+```bash
+ollama pull gemma2:2b        # override with OLLAMA_MODEL, e.g. llama3.2:3b
+```
+
+This is optional: without Ollama the pipeline still runs and the digest falls back to each
+publisher's teaser sentence.
+
+### 5. Run the first fetch and launch the dashboard
 
 ```bash
 python src/fetch.py          # Fetch and process articles once
 streamlit run app.py         # Launch the dashboard
 ```
 
-### 5. Enable automatic scheduling
+### 6. Enable automatic scheduling
 
 ```bash
 python src/scheduler.py      # Runs the full pipeline every 2 hours
@@ -113,9 +129,10 @@ Follow these phases in order. Each builds on the last.
 | 03 | ETL pipeline | Extend fetch to deduplicate on URL, clean text (strip HTML, normalise whitespace), and load into Neon. Verify row counts. |
 | 04 | Sentiment scoring | Write `src/sentiment.py` using a fine-tuned Danish transformer (Hugging Face). Score each Danish headline + summary directly. Store score (−1 to +1) and a label (positive / neutral / negative) back to Neon. |
 | 05 | Topic classification | In `src/iptc.py`, embed each Danish article and the 17 IPTC Media Topics category phrases with a multilingual sentence-transformer, then assign each article the category with the highest cosine similarity (no training data; below a confidence floor → `Øvrige`). `src/topics.py` provides the shared Danish lemmatizing tokenizer reused for the word clouds. |
-| 06 | Streamlit dashboard | Build `app.py` with KPI cards, per-category word clouds (the 6 most prevalent IPTC categories), a category distribution bar chart, source comparison view, a source×category mean-sentiment heatmap, and a filterable article table with sentiment labels. |
-| 07 | Scheduling | Add APScheduler to `src/scheduler.py` to trigger the full pipeline (fetch → sentiment → IPTC classify) every 2 hours. |
-| 08 | Documentation | Write a clean README, comment your SQL, and add a short project write-up. Push everything to GitHub. |
+| 06 | News digest | In `src/digest.py`, summarise a story into one Danish sentence with a local LLM (Ollama). `src/overview.py` picks the top-6 topics' 3 most multi-source-covered stories (clustering near-duplicates with the IPTC embedding model) and stores them — with their digests — as a `news_overview` snapshot. |
+| 07 | Streamlit dashboard | Build `app.py` with the "Nyhedsoverblik" digest banner on top, KPI cards, per-category word clouds (the 6 most prevalent IPTC categories), a category distribution bar chart, source comparison view, a source×category mean-sentiment heatmap, and a filterable article table with sentiment labels. |
+| 08 | Scheduling | Add APScheduler to `src/scheduler.py` to trigger the full pipeline (fetch → sentiment → IPTC classify → overview) every 2 hours. |
+| 09 | Documentation | Write a clean README, comment your SQL, and add a short project write-up. Push everything to GitHub. |
 
 ---
 
@@ -183,7 +200,11 @@ streamlit
 plotly
 wordcloud
 apscheduler
+ollama
 ```
+
+> The digest stage also needs the **Ollama app** installed locally with a model pulled
+> (`ollama pull gemma2:2b`); the `ollama` Python package above is just the client.
 
 ---
 
@@ -194,6 +215,7 @@ This project runs NLP **directly on Danish** — there is no translation step:
 - **Sentiment** uses a fine-tuned Danish transformer (Hugging Face `transformers`), scoring the original `title`/`summary`. The 3-class model maps to a label and a −1..+1 score (`P(positive) − P(negative)`). The model (~0.4 GB) downloads on first run and is cached locally.
 - **Topic classification** uses the fixed **IPTC Media Topics** taxonomy. A multilingual sentence-transformer embeds each Danish article and each of the 17 Danish category phrases, and the article is assigned the category with the highest cosine similarity — zero training data, one forward pass per article. Articles whose best match falls below a confidence floor are bucketed as `Øvrige`.
 - **Word clouds** are built per category from a **TF-IDF** over each category's Danish text, tokenized with a `simplemma` lemmatizer (so inflected forms like `regeringen`/`regeringens` collapse onto `regering`) and filtered against Danish stop words — a union of NLTK's Danish list and an extended list in `data/danish_stopwords.txt`. The terms are therefore lemmatized Danish.
+- **News digests** are written by a **local LLM** (Ollama, default `gemma2:2b`) directly in Danish — one neutral sentence per top story for the "Nyhedsoverblik" banner. Keeping it local mirrors the no-external-API stance of the rest of the pipeline. "Importance" has no engagement data behind it, so it is inferred from **multi-source coverage**: within each topic, near-duplicate stories are clustered across outlets (reusing the IPTC embedding model) and the most widely covered ones win. If Ollama isn't running the digest gracefully falls back to the publisher's own teaser sentence.
 
 The design has evolved twice. An early version translated everything to English first (DeepL) so English-only tools like VADER could be used; that translate-first stage was removed in favour of native Danish models, avoiding translation drift and the external API dependency. Topics were then modelled with LDA, then NMF over TF-IDF, and finally replaced by IPTC embedding-similarity classification — which yields stable, human-readable categories and is far cheaper on CPU than per-label zero-shot NLI.
 

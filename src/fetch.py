@@ -214,6 +214,16 @@ def run_pipeline() -> int:
 
     sentiment.score_pending()
     iptc.classify_pending()   # IPTC top-level category — the topic axis
+
+    # Rebuild the dashboard's "Nyhedsoverblik" snapshot (top stories + digests).
+    # Isolated so a digest/Ollama hiccup can't fail the run — the failure toast
+    # is reserved for genuine fetch/NLP problems, not a missing local LLM.
+    try:
+        import overview
+        overview.build_overview()
+    except Exception as exc:
+        print(f"[error] overview build failed: {exc!r}; snapshot left unchanged")
+
     print("[pipeline] done")
     return inserted
 

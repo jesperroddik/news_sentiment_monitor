@@ -45,6 +45,21 @@ def load_articles() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=600)
+def load_overview() -> dict | None:
+    """Latest precomputed 'Nyhedsoverblik' snapshot, or None if none built yet."""
+    from sqlalchemy import text
+
+    with db.get_engine().connect() as conn:
+        row = conn.execute(
+            text(
+                "SELECT payload FROM news_overview "
+                "ORDER BY generated_at DESC LIMIT 1"
+            )
+        ).scalar()
+    return row  # JSONB comes back as a dict (or None)
+
+
+@st.cache_data(ttl=600)
 def iptc_clouds(top_k: int = 6, n: int = 40) -> dict[str, object]:
     """Word-cloud image for each of the ``top_k`` most prevalent IPTC categories.
 
@@ -94,6 +109,37 @@ def iptc_clouds(top_k: int = 6, n: int = 40) -> dict[str, object]:
     return images
 
 
+def render_story(s: dict) -> None:
+    """Render one overview story: the digest sentence (linked) + a meta caption."""
+    da = SENTIMENT_DA.get(s.get("sentiment_label"), "")
+    color = SENTIMENT_FARVER.get(da, "#7f7f7f")
+    digest = s.get("digest") or s.get("title", "")
+    coverage = f" · {s['n_sources']} kilder" if s.get("n_sources", 1) > 1 else ""
+    meta = (
+        f"<div style='font-size:0.82em;color:#666;margin:-4px 0 12px 0'>"
+        f"{', '.join(s.get('sources', []))}"
+        f"<span style='color:{color}'> · ● {da}</span>{coverage}</div>"
+    )
+    st.markdown(f"**[{digest}]({s['url']})**")
+    st.markdown(meta, unsafe_allow_html=True)
+
+
+def render_overview(overview: dict | None, per_row: int = 3) -> None:
+    """Render the 'Nyhedsoverblik' banner from a stored snapshot."""
+    topics = (overview or {}).get("topics") if overview else None
+    if not topics:
+        st.info("Intet overblik endnu. Kør pipelinen (`python src/fetch.py`) "
+                "for at bygge det.")
+        return
+    for i in range(0, len(topics), per_row):
+        cols = st.columns(per_row)
+        for col, topic in zip(cols, topics[i : i + per_row]):
+            with col:
+                st.markdown(f"##### {topic['category']}")
+                for story in topic["stories"]:
+                    render_story(story)
+
+
 st.title("🇩🇰 Dansk Nyhedssentiment-monitor")
 st.caption(
     "Emnesporing og sentimentanalyse på tværs af DR, TV2, Politiken, Information, "
@@ -104,6 +150,15 @@ df = load_articles()
 if df.empty:
     st.warning("Ingen artikler endnu. Kør `python src/fetch.py` for at fylde databasen.")
     st.stop()
+
+# --- Nyhedsoverblik (digest af de vigtigste historier pr. emne) ------------
+st.subheader("📰 Nyhedsoverblik")
+st.caption(
+    "De vigtigste historier pr. emne lige nu — flest kilder først, med et "
+    "kort dansk resumé. Bygges med pipelinen og påvirkes ikke af filtrene."
+)
+render_overview(load_overview())
+st.divider()
 
 # --- Sidebjælke-filtre -----------------------------------------------------
 st.sidebar.header("Filtre")

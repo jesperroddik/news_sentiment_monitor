@@ -18,9 +18,11 @@ src/
   sentiment.py   # Danish transformer sentiment (-1 to +1) on raw Danish + label
   topics.py      # shared Danish text preprocessing: lemmatizing tokenizer (simplemma) + stop words; reused by the IPTC word clouds
   iptc.py        # IPTC Media Topics category on raw Danish via embedding similarity (sentence-transformer + cosine); per-article iptc_category + confidence
+  digest.py      # one-sentence Danish digest of a story via a local LLM (Ollama); falls back to the publisher teaser when Ollama is unavailable
+  overview.py    # builds the dashboard's "Nyhedsoverblik" snapshot: top-6 topics x 3 most multi-source-covered stories + their digests, stored in news_overview
   scheduler.py   # APScheduler job running full pipeline every 2 hours
 sql/
-  schema.sql     # articles table definition (sentiment_*, iptc_category)
+  schema.sql     # articles table (sentiment_*, iptc_*, digest) + news_overview snapshot table
   analysis_queries.sql
 app.py           # Streamlit dashboard
 .env             # DATABASE_URL (see .env.example)
@@ -35,6 +37,8 @@ cp .env.example .env   # fill in DATABASE_URL
 psql $DATABASE_URL -f sql/schema.sql
 ```
 
+The digest stage (`digest.py`/`overview.py`) needs a local **Ollama** install — install the Ollama app (auto-starts a `localhost:11434` service) and pull a model: `ollama pull gemma2:2b` (override with `OLLAMA_MODEL`). It's optional: without it the pipeline still runs and the overview falls back to publisher-teaser sentences.
+
 ## Common Commands
 
 | Task | Command |
@@ -45,7 +49,7 @@ psql $DATABASE_URL -f sql/schema.sql
 
 ## Architecture
 
-The pipeline runs in this order: **fetch → store → sentiment → IPTC classify**.
+The pipeline runs in this order: **fetch → store → sentiment → IPTC classify → overview**.
 
 - `db.py` owns the SQLAlchemy engine/session; all other modules import from it.
 - `fetch.py` collects RSS feeds (`fetch_feeds`) and merges in `scrape.scrape_all()` (DR + TV2), then `store_articles()` deduplicates on URL before inserting. `check_sources()` runs first — it pings every RSS feed *and* probes each scrape page for its JSON marker via `scrape.check_sources()` — and aborts only if *every* source is unreachable; a feed returning 0 entries is logged loudly as an error rather than treated as a quiet news day.
@@ -53,7 +57,9 @@ The pipeline runs in this order: **fetch → store → sentiment → IPTC classi
 - `sentiment.py` scores the **original Danish** `title`/`summary` with a fine-tuned Danish transformer (`MODEL_NAME` in the module). Maps `argmax` to the label and `P(pos)-P(neg)` to the -1..+1 score. Model downloads from Hugging Face on first run (~0.4 GB, cached under `~/.cache/huggingface`).
 - `topics.py` is now just **shared Danish text preprocessing** (the NMF topic model it once held was removed). `lemmatize_tokens` lemmatizes tokens to Danish base forms via `simplemma` (so `regeringen`/`regeringens` collapse onto `regering`) and filters stop words (`danish_stopwords()` — the union of NLTK's Danish list and an extended list in `data/danish_stopwords.txt`, which **overrides** the NLTK fallback when present). `app.py` passes `lemmatize_tokens` as the tokenizer when building the per-IPTC-category word clouds, so their terms are lemmatized Danish. Requires `simplemma` wherever it is used.
 - `iptc.py` assigns each article one **IPTC Media Topics top-level category** (`iptc_category`, e.g. `Politik`, `Sport`) via **embedding similarity** on the Danish `title`/`summary`. A multilingual sentence-transformer (`MODEL_NAME`, MiniLM) embeds the article and each of the 17 Danish category phrases in `IPTC_LABELS`; the article gets the category with the highest cosine similarity (both sides L2-normalized, so a dot product is the cosine). The best similarity is written back as confidence (`iptc_score`); below `CONFIDENCE_FLOOR` it is bucketed as `Øvrige`. The label embeddings are cached (`_label_space`). No training data and no `.pkl` — the model *is* the artifact (cached by HF, ~0.12 GB on first run). This replaced an earlier zero-shot-NLI approach that needed one forward pass *per label* (17×) and was too slow/unstable on CPU; embedding similarity is one pass per article. `classify_pending` encodes and commits per `_CHUNK` so a crash is resumable (only `iptc_category IS NULL` rows are selected). The IPTC category is the **only** topic axis surfaced in the dashboard; `topic_id` is no longer displayed.
-- `app.py` reads directly from Neon; no local state. Expects the pipeline columns (`sentiment_score`, `sentiment_label`, `iptc_category`) to be populated before launch; the UI is in Danish and shows **per-IPTC-category word clouds** (`iptc_clouds`: the 6 most prevalent categories, each a TF-IDF over that category's Danish title+summary, lemmatized via `topics.lemmatize_tokens`, `Øvrige` excluded), an IPTC **category**-distribution bar chart, a source×category mean-sentiment heatmap, a category filter, and a filterable article table (no English translation displayed). Editing `topics.py`/`iptc.py`/`db.py` requires a Streamlit restart (already-imported modules are cached in `sys.modules`); editing `app.py` itself hot-reloads.
+- `digest.py` writes a **one-sentence Danish digest** of a single story via a **local LLM (Ollama)** — kept local/no-external-API like the rest of the NLP. `digest_text(title, summary)` returns `(sentence, from_llm)`; it prompts `OLLAMA_MODEL` (default `gemma2:2b`) over `localhost:11434` via the `ollama` package. If Ollama isn't installed/running it logs once and falls back to the publisher teaser's first sentence with `from_llm=False`, so the pipeline degrades instead of crashing (same stance as `scrape.py`). The `ollama` import is deferred so the module imports cheaply even without the package. **Ollama is an external prerequisite** (install the app + `ollama pull gemma2:2b`), unlike the pip-only Hugging Face models.
+- `overview.py` builds the dashboard's **"Nyhedsoverblik"** snapshot. `build_overview()` loads recent classified articles (last 72 h, `Øvrige` excluded), takes the **top-6 most prevalent IPTC categories**, and within each clusters near-duplicate stories across outlets by **embedding cosine similarity** (reusing `iptc._model()` — no second model load; `sklearn.cluster.AgglomerativeClustering`, `metric="cosine"`, `distance_threshold≈0.35`). Clusters rank by **distinct-source count then recency** — so "importance" = multi-source coverage, with singletons falling back to recency — and the top 3 per topic are kept. The representative (longest summary, tie-broken by earliest publish) gets a digest via `digest.py`, **cached on `articles.digest` only when LLM-generated** (a teaser fallback stays un-cached so the next run retries Ollama). The whole thing is written as one JSON blob to `news_overview`; the pipeline wraps this stage in try/except so a digest hiccup can't fail the run.
+- `app.py` reads directly from Neon; no local state. Expects the pipeline columns (`sentiment_score`, `sentiment_label`, `iptc_category`) to be populated before launch; the UI is in Danish and shows, **at the very top, the "Nyhedsoverblik" digest banner** (`load_overview` → the latest `news_overview` snapshot, rendered as top-6 topics × 3 stories, each a linked digest sentence + covering sources + sentiment chip + `N kilder` coverage count; this banner is a global "what's happening now" view and is **not** affected by the sidebar filters), then **per-IPTC-category word clouds** (`iptc_clouds`: the 6 most prevalent categories, each a TF-IDF over that category's Danish title+summary, lemmatized via `topics.lemmatize_tokens`, `Øvrige` excluded), an IPTC **category**-distribution bar chart, a source×category mean-sentiment heatmap, a category filter, and a filterable article table (no English translation displayed). Editing `topics.py`/`iptc.py`/`db.py`/`overview.py`/`digest.py` requires a Streamlit restart (already-imported modules are cached in `sys.modules`); editing `app.py` itself hot-reloads.
 
 ## Key Constraints
 
