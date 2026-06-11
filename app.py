@@ -96,7 +96,7 @@ def iptc_clouds(top_k: int = 6, n: int = 40) -> dict[str, object]:
 
 st.title("🇩🇰 Dansk Nyhedssentiment-monitor")
 st.caption(
-    "Emnesporing og sentimentanalyse på tværs af DR, Politiken, Information, "
+    "Emnesporing og sentimentanalyse på tværs af DR, TV2, Politiken, Information, "
     "Jyllands-Posten, Berlingske og Kristeligt Dagblad."
 )
 

@@ -25,7 +25,7 @@ Built with a media monitoring background in mind, the project answers:
 
 | Category | Tool / Technology | Purpose |
 |---|---|---|
-| Data Collection | RSS feeds (`feedparser`) | Pull headlines and summaries from DR, Politiken, Information, Jyllands-Posten, Berlingske, Kristeligt Dagblad |
+| Data Collection | RSS feeds (`feedparser`) + HTML scrapers (`requests`) | Pull headlines and summaries from Politiken, Information, Jyllands-Posten, Berlingske, Kristeligt Dagblad (RSS) plus DR and TV2 (scraped from their embedded JSON) |
 | Data Storage | PostgreSQL (Neon serverless) | Persist all articles, scores, and topic assignments |
 | Sentiment Analysis | Danish transformer (`transformers`) | Sentiment scoring on the original Danish text (positive / neutral / negative) |
 | Topic Classification | Multilingual sentence-transformer + cosine similarity (`sentence-transformers`) | Assign each article a fixed IPTC Media Topics category |
@@ -47,7 +47,8 @@ danish-news-sentiment/
 │   └── analysis_queries.sql     # Business queries for dashboard
 ├── src/
 │   ├── db.py                    # Neon/PostgreSQL connection helper
-│   ├── fetch.py                 # RSS collector + start-up source health check
+│   ├── fetch.py                 # RSS collector + scrape orchestration + source health check
+│   ├── scrape.py                # HTML scrapers for DR and TV2 (parse embedded JSON)
 │   ├── sentiment.py             # Danish transformer sentiment scoring
 │   ├── iptc.py                  # IPTC category classification (embedding similarity)
 │   ├── topics.py                # Danish lemmatizing tokenizer (shared text preprocessing)
@@ -134,7 +135,6 @@ Follow these phases in order. Each builds on the last.
 
 | Source | RSS URL | Notes |
 |---|---|---|
-| DR | `https://www.dr.dk/nyheder/service/feeds/allenyheder` | Danish public broadcaster |
 | Politiken | `https://politiken.dk/rss/senestenyt.rss` | Centre-left broadsheet |
 | Information | `https://www.information.dk/feed` | Independent daily |
 | Jyllands-Posten | `https://newsletter-proxy.aws.jyllands-posten.dk/v1/top-stories/jyllands-posten.dk` | Major daily — top-stories feed |
@@ -144,11 +144,22 @@ Follow these phases in order. Each builds on the last.
 
 A single source may expose multiple feeds (Jyllands-Posten has both top-stories and latest-news), so `RSS_FEEDS` maps each source label to a *list* of feed URLs; `store_articles()` dedups on URL, so any overlap between a source's feeds is harmless.
 
-`fetch.py` runs a start-up health check (`check_sources()`) that pings each feed and aborts if all are unreachable, so a dead feed surfaces immediately instead of silently contributing zero articles.
+### Scraped sources (`src/scrape.py`)
 
-### Sources without a usable feed
+Two national sources don't offer a usable RSS feed, so `scrape.py` collects them by parsing the **embedded JSON** their server-rendered pages already ship (no headless browser):
 
-TV2 discontinued its public RSS feed (`feeds.tv2.dk` no longer resolves). (Berlingske's legacy `berlingske.dk/rss` was dead, and Kristeligt Dagblad was previously thought to publish no feed, but their `next-api` "alle" and `/rss/nyheder` feeds respectively work and are now included above.) NewsAPI.org was evaluated as a fallback for the remaining outlets but its free tier returns almost no Danish coverage, so it is not used. TV2 is currently omitted.
+| Source | Page | How |
+|---|---|---|
+| DR | `https://www.dr.dk/nyheder` | Parse the Next.js `__NEXT_DATA__` blob. DR's RSS feed omits article summaries — the page carries them. URLs rebuild to the RSS format, so rows dedup cleanly. |
+| TV2 | `https://nyheder.tv2.dk/live/kort-nyt` | Parse the JSON-LD `LiveBlogPosting`; each "kort nyt" update has a headline, body, timestamp, and a unique `#entry=<uuid>` URL. TV2's public RSS feed no longer resolves. |
+
+Scraped articles use the same `source`/`title`/`summary`/`url`/`published_at` shape as RSS, so the rest of the pipeline is identical. Because these JSON shapes are framework-specific, a scraper logs a loud error and yields nothing (rather than crashing) if the page is restructured.
+
+`fetch.py` runs a start-up health check (`check_sources()`) that pings each RSS feed **and** probes each scrape page for its JSON marker, aborting only if *every* source is unreachable — so a dead feed or a restructured page surfaces immediately instead of silently contributing zero articles.
+
+### A note on feeds that don't work
+
+TV2 discontinued its public RSS feed (`feeds.tv2.dk` no longer resolves) and DR's RSS feed omits article summaries — both are now collected via the scrapers above instead. (Berlingske's legacy `berlingske.dk/rss` was dead, and Kristeligt Dagblad was previously thought to publish no feed, but their `next-api` "alle" and `/rss/nyheder` feeds respectively work and are included in the RSS table.) NewsAPI.org was evaluated as a fallback but its free tier returns almost no Danish coverage, so it is not used.
 
 ---
 

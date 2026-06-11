@@ -21,14 +21,16 @@ import db
 # RSS feeds (free, no key required). source label -> list of feed URLs.
 # A single source may expose more than one feed (e.g. Jyllands-Posten's
 # top-stories and latest-news); store_articles() dedups on URL, so any overlap
-# between a source's feeds is harmless. TV2's public feed (feeds.tv2.dk) no
-# longer resolves, so it remains unavailable. Berlingske's legacy
-# berlingske.dk/rss was dead, but its next-api "alle" feed works (it declares
-# us-ascii yet serves utf-8, so feedparser flags bozo — benign, the entries
-# parse fine). Kristeligt Dagblad's /rss/nyheder feed delivers HTML-escaped
-# summaries, which clean_text() unescapes-then-strips.
+# between a source's feeds is harmless. Berlingske's legacy berlingske.dk/rss
+# was dead, but its next-api "alle" feed works (it declares us-ascii yet serves
+# utf-8, so feedparser flags bozo — benign, the entries parse fine). Kristeligt
+# Dagblad's /rss/nyheder feed delivers HTML-escaped summaries, which clean_text()
+# unescapes-then-strips.
+#
+# DR and TV2 are NOT here: DR's RSS feed omits article summaries and TV2's public
+# feed no longer resolves, so both are collected by scrape.py instead (their pages
+# embed the full data as JSON). See scrape.SCRAPE_SOURCES.
 RSS_FEEDS: dict[str, list[str]] = {
-    "DR": ["https://www.dr.dk/nyheder/service/feeds/allenyheder"],
     "Politiken": ["https://politiken.dk/rss/senestenyt.rss"],
     "Information": ["https://www.information.dk/feed"],
     "Jyllands-Posten": [
@@ -116,6 +118,8 @@ def check_sources() -> dict[str, bool]:
     contributing zero articles. Returns ``{feed_url: healthy?}``. Raises
     ``RuntimeError`` if *every* feed is down — there is nothing to do.
     """
+    import scrape
+
     status: dict[str, bool] = {}
     print("[startup] checking sources...")
 
@@ -130,8 +134,11 @@ def check_sources() -> dict[str, bool]:
                 reason = getattr(parsed, "bozo_exception", None) or "no entries"
                 print(f"  [DEAD] {source}: {reason} ({url})")
 
+    # Scraped sources (DR, TV2) — validate their embedded-JSON marker is present.
+    status.update(scrape.check_sources())
+
     healthy = sum(status.values())
-    print(f"[startup] {healthy}/{len(status)} feeds healthy")
+    print(f"[startup] {healthy}/{len(status)} sources healthy")
     if healthy == 0:
         raise RuntimeError("No healthy news sources — aborting pipeline.")
     return status
@@ -174,10 +181,11 @@ def run_pipeline() -> None:
     """Full one-off pipeline: fetch -> store -> sentiment -> IPTC classify."""
     # Imported lazily so each stage can be developed/run in isolation.
     import iptc
+    import scrape
     import sentiment
 
     check_sources()
-    inserted = store_articles(fetch_feeds())
+    inserted = store_articles(fetch_feeds() + scrape.scrape_all())
     if inserted == 0:
         print("[pipeline] no new articles; running NLP on any pending rows anyway")
 
