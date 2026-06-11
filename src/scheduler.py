@@ -2,7 +2,7 @@
 
     python src/scheduler.py
 
-Triggers fetch -> sentiment -> topic assign on an interval,
+Triggers fetch -> sentiment -> IPTC classify on an interval,
 plus one immediate run on startup. Ctrl-C to stop.
 """
 

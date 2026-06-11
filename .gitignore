@@ -15,6 +15,9 @@ models/
 # Local data snapshots
 data/*.csv
 
+# Scheduled-task run logs
+logs/
+
 # Notebooks
 .ipynb_checkpoints/
 
