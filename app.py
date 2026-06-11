@@ -3,7 +3,7 @@
     streamlit run app.py
 
 Læser direkte fra Neon (ingen lokal tilstand) og forventer, at pipeline-kolonnerne
-(sentiment_score, sentiment_label, topic_id) er udfyldt. Sentiment scores på den
+(sentiment_score, sentiment_label, iptc_category) er udfyldt. Sentiment scores på den
 oprindelige danske tekst, så dashboardet viser ikke den engelske oversættelse.
 """
 
@@ -35,7 +35,7 @@ def load_articles() -> pd.DataFrame:
     query = """
         SELECT id, source, title, summary,
                url, published_at, sentiment_score, sentiment_label,
-               topic_id, fetched_at
+               iptc_category, iptc_score, fetched_at
         FROM articles
         ORDER BY published_at DESC NULLS LAST
     """
@@ -45,30 +45,53 @@ def load_articles() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=600)
-def topic_clouds(n: int = 40) -> dict[int, object]:
-    """Render a word-cloud image per LDA topic from its term weights."""
-    images: dict[int, object] = {}
-    for tid, freqs in topics.topic_term_weights(n).items():
+def iptc_clouds(top_k: int = 6, n: int = 40) -> dict[str, object]:
+    """Word-cloud image for each of the ``top_k`` most prevalent IPTC categories.
+
+    Each category is treated as one aggregated document (its articles' Danish
+    title+summary, lemmatized via ``topics.lemmatize_tokens``); a TF-IDF across
+    the categories then surfaces the terms most *distinctive* to each one. The
+    ``Øvrige`` below-floor bucket is excluded. Insertion order follows
+    prevalence, so the most common category renders first.
+    """
+    from sklearn.feature_extraction.text import TfidfVectorizer
+
+    rows = pd.read_sql(
+        """
+        SELECT iptc_category, title, summary
+        FROM articles
+        WHERE iptc_category IS NOT NULL AND iptc_category <> 'Øvrige'
+        """,
+        db.get_engine(),
+    )
+    if rows.empty:
+        return {}
+
+    rows["text"] = (
+        rows["title"].fillna("") + " " + rows["summary"].fillna("")
+    ).str.strip()
+    top_cats = rows["iptc_category"].value_counts().head(top_k).index.tolist()
+    docs = [" ".join(rows.loc[rows["iptc_category"] == cat, "text"]) for cat in top_cats]
+
+    vec = TfidfVectorizer(
+        tokenizer=topics.lemmatize_tokens, token_pattern=None, lowercase=False,
+    )
+    dtm = vec.fit_transform(docs)
+    features = vec.get_feature_names_out()
+
+    images: dict[str, object] = {}
+    for i, cat in enumerate(top_cats):
+        weights = dtm[i].toarray().ravel()
+        top_idx = weights.argsort()[::-1][:n]
+        freqs = {features[j]: float(weights[j]) for j in top_idx if weights[j] > 0}
         if not freqs:
             continue
         wc = WordCloud(
             width=480, height=320, background_color="white",
             colormap="viridis", prefer_horizontal=0.9,
         ).generate_from_frequencies(freqs)
-        images[tid] = wc.to_array()
+        images[cat] = wc.to_array()
     return images
-
-
-@st.cache_data(ttl=600)
-def topic_label_map(n: int = 3) -> dict[int, str]:
-    """Top-term label per topic_id, regenerated whenever the model is retrained."""
-    return topics.topic_labels(n)
-
-
-def label_for(tid) -> str:
-    """Display name for a topic_id, falling back to 'Emne N' if unlabelled."""
-    name = topic_label_map().get(int(tid))
-    return f"{int(tid)}: {name}" if name else f"Emne {int(tid)}"
 
 
 st.title("🇩🇰 Dansk Nyhedssentiment-monitor")
@@ -98,9 +121,8 @@ labels = st.sidebar.multiselect(
     "Stemning", ["positive", "neutral", "negative"], default=None,
     format_func=lambda x: SENTIMENT_DA[x],
 )
-selected_topics = st.sidebar.multiselect(
-    "Emne", sorted(df["topic_id"].dropna().unique().astype(int)), default=None,
-    format_func=label_for,
+selected_categories = st.sidebar.multiselect(
+    "Kategori (IPTC)", sorted(df["iptc_category"].dropna().unique()), default=None,
 )
 
 mask = pd.Series(True, index=df.index)
@@ -111,8 +133,8 @@ if sources:
     mask &= df["source"].isin(sources)
 if labels:
     mask &= df["sentiment_label"].isin(labels)
-if selected_topics:
-    mask &= df["topic_id"].isin(selected_topics)
+if selected_categories:
+    mask &= df["iptc_category"].isin(selected_categories)
 
 fdf = df[mask]
 
@@ -121,38 +143,38 @@ c1, c2, c3, c4 = st.columns(4)
 c1.metric("Artikler", f"{len(fdf):,}")
 avg = fdf["sentiment_score"].mean()
 c2.metric("Gns. stemning", f"{avg:+.3f}" if pd.notna(avg) else "—")
-c3.metric("Emner", int(fdf["topic_id"].nunique()))
+c3.metric("Kategorier", int(fdf["iptc_category"].nunique()))
 c4.metric("Kilder", int(fdf["source"].nunique()))
 
 st.divider()
 
-# --- Emneskyer (ordsky pr. emne) -------------------------------------------
+# --- Emneskyer (ordsky pr. kategori) ---------------------------------------
 st.subheader("Emneskyer")
-st.caption("Mest karakteristiske ord pr. emne fra emnemodellen (NMF, dansk korpus).")
-clouds = topic_clouds()
+st.caption("Mest karakteristiske ord for de 6 mest udbredte IPTC-kategorier (dansk korpus).")
+clouds = iptc_clouds()
 if clouds:
     per_row = 3
-    tids = sorted(clouds)
-    for i in range(0, len(tids), per_row):
+    cats = list(clouds)
+    for i in range(0, len(cats), per_row):
         row = st.columns(per_row)
-        for col, tid in zip(row, tids[i : i + per_row]):
-            col.image(clouds[tid], caption=label_for(tid), use_container_width=True)
+        for col, cat in zip(row, cats[i : i + per_row]):
+            col.image(clouds[cat], caption=cat, use_container_width=True)
 else:
-    st.info("Ingen emnemodel endnu. Kør topic-trinet for at generere emner.")
+    st.info("Ingen kategorier endnu. Kør pipelinen for at klassificere artikler.")
 
 # --- Emnefordeling + kildesammenligning ------------------------------------
 left, right = st.columns(2)
 with left:
-    st.subheader("Emnefordeling")
-    topic_counts = fdf["topic_id"].dropna().astype(int).value_counts().sort_index()
-    if not topic_counts.empty:
+    st.subheader("Kategorifordeling")
+    cat_counts = fdf["iptc_category"].dropna().value_counts()
+    if not cat_counts.empty:
         fig = px.bar(
-            x=[label_for(t) for t in topic_counts.index], y=topic_counts.values,
-            labels={"x": "Emne", "y": "Artikler"},
+            x=cat_counts.index, y=cat_counts.values,
+            labels={"x": "Kategori", "y": "Artikler"},
         )
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("Ingen emnetildelinger endnu.")
+        st.info("Ingen kategoritildelinger endnu.")
 
 with right:
     st.subheader("Stemning pr. kilde")
@@ -172,40 +194,36 @@ with right:
     else:
         st.info("Ingen mærkede data endnu.")
 
-# --- Stemning pr. kilde og emne (matrix) -----------------------------------
-st.subheader("Stemning pr. kilde og emne")
-st.caption("Gennemsnitlig stemningsscore (−1 til +1) for hver kilde pr. emne.")
-heat = fdf.dropna(subset=["topic_id", "sentiment_score"]).copy()
+# --- Stemning pr. kilde og kategori (matrix) -------------------------------
+st.subheader("Stemning pr. kilde og kategori")
+st.caption("Gennemsnitlig stemningsscore (−1 til +1) for hver kilde pr. IPTC-kategori.")
+heat = fdf.dropna(subset=["iptc_category", "sentiment_score"]).copy()
 if not heat.empty:
-    heat["topic_id"] = heat["topic_id"].astype(int)
     pivot = heat.pivot_table(
-        index="source", columns="topic_id", values="sentiment_score", aggfunc="mean"
+        index="source", columns="iptc_category", values="sentiment_score", aggfunc="mean"
     ).sort_index(axis=1)
-    pivot.columns = [label_for(c) for c in pivot.columns]
     fig = px.imshow(
         pivot,
         color_continuous_scale="RdYlGn",
         zmin=-1, zmax=1,
         aspect="auto",
         text_auto=".2f",
-        labels={"x": "Emne", "y": "Kilde", "color": "Gns. stemning"},
+        labels={"x": "Kategori", "y": "Kilde", "color": "Gns. stemning"},
     )
     fig.update_xaxes(type="category")
     st.plotly_chart(fig, use_container_width=True)
 else:
-    st.info("Ingen stemningsdata pr. emne endnu.")
+    st.info("Ingen stemningsdata pr. kategori endnu.")
 
 # --- Artikeltabel ----------------------------------------------------------
 st.subheader("Artikler")
 table = fdf.copy()
 table["stemning"] = table["sentiment_label"].map(SENTIMENT_DA)
-table["emne"] = table["topic_id"].map(
-    lambda t: label_for(t) if pd.notna(t) else ""
-)
+table["kategori"] = table["iptc_category"].fillna("")
 st.dataframe(
     table[
         ["published_at", "source", "title",
-         "sentiment_score", "stemning", "emne", "url"]
+         "sentiment_score", "stemning", "kategori", "url"]
     ],
     use_container_width=True,
     hide_index=True,
@@ -215,7 +233,7 @@ st.dataframe(
         "title": "Overskrift",
         "sentiment_score": st.column_config.NumberColumn("Stemningsscore", format="%.3f"),
         "stemning": "Stemning",
-        "emne": "Emne",
+        "kategori": "Kategori",
         "url": st.column_config.LinkColumn("Link"),
     },
 )

@@ -4,7 +4,8 @@
 -- One row per news article. Columns are populated in pipeline order:
 --   fetch     -> source, title, summary, url, published_at, fetched_at
 --   sentiment -> sentiment_score, sentiment_label
---   topics    -> topic_id
+--   iptc      -> iptc_category, iptc_score (fixed IPTC Media Topics taxonomy;
+--                drives every dashboard view, including the word clouds)
 
 CREATE TABLE IF NOT EXISTS articles (
     id                  SERIAL PRIMARY KEY,
@@ -20,17 +21,26 @@ CREATE TABLE IF NOT EXISTS articles (
     sentiment_score     REAL,                            -- P(pos)-P(neg), -1.0 .. +1.0
     sentiment_label     TEXT,                            -- 'positive' | 'neutral' | 'negative'
 
-    -- LDA topic assignment (dominant topic for this article).
-    topic_id            INTEGER,
+    -- IPTC Media Topics top-level category (embedding similarity), with confidence.
+    iptc_category       TEXT,                            -- e.g. 'Politik', 'Sport'
+    iptc_score          REAL,                            -- best cosine similarity, 0..1
 
     fetched_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Idempotent migrations for databases created under an older schema.
+ALTER TABLE articles ADD COLUMN IF NOT EXISTS iptc_category TEXT;
+ALTER TABLE articles ADD COLUMN IF NOT EXISTS iptc_score    REAL;
+-- The NMF topic model was removed in favour of IPTC categories; drop its column.
+ALTER TABLE articles DROP COLUMN IF EXISTS topic_id;
+
 -- Dashboard and pipeline access patterns.
 CREATE INDEX IF NOT EXISTS idx_articles_published_at ON articles (published_at);
 CREATE INDEX IF NOT EXISTS idx_articles_source       ON articles (source);
-CREATE INDEX IF NOT EXISTS idx_articles_topic_id     ON articles (topic_id);
+CREATE INDEX IF NOT EXISTS idx_articles_iptc_category ON articles (iptc_category);
 
--- Partial index to speed up the "find unscored work" query in the sentiment stage.
+-- Partial indexes to speed up the "find pending work" queries in the NLP stages.
 CREATE INDEX IF NOT EXISTS idx_articles_unscored
     ON articles (id) WHERE sentiment_score IS NULL;
+CREATE INDEX IF NOT EXISTS idx_articles_unclassified
+    ON articles (id) WHERE iptc_category IS NULL;

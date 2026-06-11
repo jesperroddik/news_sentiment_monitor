@@ -5,14 +5,15 @@
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Neon-4169E1?logo=postgresql&logoColor=white)
 ![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?logo=streamlit&logoColor=white)
 ![Transformers](https://img.shields.io/badge/%F0%9F%A4%97%20Transformers-FFD21E?logoColor=black)
-![scikit-learn](https://img.shields.io/badge/scikit--learn-NMF%20%2B%20TF--IDF-F7931E?logo=scikit-learn&logoColor=white)
+![sentence-transformers](https://img.shields.io/badge/sentence--transformers-IPTC-2ca5e0)
+![scikit-learn](https://img.shields.io/badge/scikit--learn-TF--IDF-F7931E?logo=scikit-learn&logoColor=white)
 ![Git](https://img.shields.io/badge/Git-F05032?logo=git&logoColor=white)
 
 ---
 
 ## Project Overview
 
-An end-to-end NLP and data pipeline project that collects headlines and article summaries from major Danish news sources in near real-time, performs sentiment analysis and topic modelling (NMF over TF-IDF, on lemmatized Danish text) **directly on the Danish text**, and presents the results in an interactive Streamlit dashboard.
+An end-to-end NLP and data pipeline project that collects headlines and article summaries from major Danish news sources in near real-time, performs sentiment analysis and classifies each article into a fixed **IPTC Media Topics** category (via multilingual embedding similarity) **directly on the Danish text**, and presents the results in an interactive Streamlit dashboard.
 
 Built with a media monitoring background in mind, the project answers:
 
@@ -27,10 +28,11 @@ Built with a media monitoring background in mind, the project answers:
 | Data Collection | RSS feeds (`feedparser`) | Pull headlines and summaries from DR, Politiken, Information, Jyllands-Posten, Berlingske, Kristeligt Dagblad |
 | Data Storage | PostgreSQL (Neon serverless) | Persist all articles, scores, and topic assignments |
 | Sentiment Analysis | Danish transformer (`transformers`) | Sentiment scoring on the original Danish text (positive / neutral / negative) |
-| Topic Modelling | NMF over TF-IDF (`scikit-learn`) + `simplemma` lemmatizer | Identify recurring topic clusters across articles |
+| Topic Classification | Multilingual sentence-transformer + cosine similarity (`sentence-transformers`) | Assign each article a fixed IPTC Media Topics category |
+| Word Clouds | TF-IDF (`scikit-learn`) + `simplemma` lemmatizer | Characteristic Danish terms per category |
 | Dashboard | Streamlit + Plotly | Interactive web app for exploration, filtering, and trend tracking |
 | Scheduling | APScheduler | Automatically fetch new articles every 1–2 hours |
-| Version Control | Git / GitHub | All code, SQL, and notebooks versioned publicly |
+| Version Control | Git / GitHub | All code, SQL, and queries versioned publicly |
 | Environment | python-dotenv | Credential management for API keys and DB connection strings |
 
 ---
@@ -40,8 +42,6 @@ Built with a media monitoring background in mind, the project answers:
 ```
 danish-news-sentiment/
 ├── data/                        # danish_stopwords.txt (custom Danish stop-word list)
-├── notebooks/
-│   └── 01_exploration.ipynb     # EDA: topic distributions, sentiment patterns
 ├── sql/
 │   ├── schema.sql               # Table definitions
 │   └── analysis_queries.sql     # Business queries for dashboard
@@ -49,7 +49,8 @@ danish-news-sentiment/
 │   ├── db.py                    # Neon/PostgreSQL connection helper
 │   ├── fetch.py                 # RSS collector + start-up source health check
 │   ├── sentiment.py             # Danish transformer sentiment scoring
-│   ├── topics.py                # NMF + TF-IDF topic model (lemmatized Danish)
+│   ├── iptc.py                  # IPTC category classification (embedding similarity)
+│   ├── topics.py                # Danish lemmatizing tokenizer (shared text preprocessing)
 │   └── scheduler.py             # APScheduler job definitions
 ├── app.py                       # Streamlit dashboard
 ├── requirements.txt
@@ -107,14 +108,13 @@ Follow these phases in order. Each builds on the last.
 | Phase | Task | Description |
 |---|---|---|
 | 01 | RSS setup | Identify working RSS feed URLs for DR, Politiken, and Information. Write `src/fetch.py` using `feedparser` to pull headlines, publication date, source, and summary, with a start-up health check that flags dead feeds. |
-| 02 | Database schema | Create a free Neon project. Write `schema.sql` with an `articles` table. Add columns for `sentiment_score`, `sentiment_label`, and `topic_id`. |
+| 02 | Database schema | Create a free Neon project. Write `schema.sql` with an `articles` table. Add columns for `sentiment_score`, `sentiment_label`, `iptc_category`, and `iptc_score`. |
 | 03 | ETL pipeline | Extend fetch to deduplicate on URL, clean text (strip HTML, normalise whitespace), and load into Neon. Verify row counts. |
 | 04 | Sentiment scoring | Write `src/sentiment.py` using a fine-tuned Danish transformer (Hugging Face). Score each Danish headline + summary directly. Store score (−1 to +1) and a label (positive / neutral / negative) back to Neon. |
-| 05 | Topic modelling | In `src/topics.py`, load all Danish text from Neon, preprocess (lemmatize with `simplemma`, remove Danish stopwords), and fit NMF over a TF-IDF matrix (`k=5`, `min_df=3`). Assign topic IDs back to each article, derive top-term topic names, and save the fitted vectorizer+model as a `.pkl` file. |
-| 06 | EDA notebook | In `notebooks/01_exploration.ipynb`, explore topic distributions over time, sentiment by source, most common topic terms, and source-tone correlation. |
-| 07 | Streamlit dashboard | Build `app.py` with KPI cards, per-topic word clouds with top-term names, topic distribution bar chart, source comparison view, a source×topic mean-sentiment heatmap, and a filterable article table with sentiment labels. |
-| 08 | Scheduling | Add APScheduler to `src/scheduler.py` to trigger the full pipeline (fetch → sentiment → topic assign) every 2 hours. |
-| 09 | Documentation | Write a clean README, comment your SQL, and add a short project write-up. Push everything to GitHub. |
+| 05 | Topic classification | In `src/iptc.py`, embed each Danish article and the 17 IPTC Media Topics category phrases with a multilingual sentence-transformer, then assign each article the category with the highest cosine similarity (no training data; below a confidence floor → `Øvrige`). `src/topics.py` provides the shared Danish lemmatizing tokenizer reused for the word clouds. |
+| 06 | Streamlit dashboard | Build `app.py` with KPI cards, per-category word clouds (the 6 most prevalent IPTC categories), a category distribution bar chart, source comparison view, a source×category mean-sentiment heatmap, and a filterable article table with sentiment labels. |
+| 07 | Scheduling | Add APScheduler to `src/scheduler.py` to trigger the full pipeline (fetch → sentiment → IPTC classify) every 2 hours. |
+| 08 | Documentation | Write a clean README, comment your SQL, and add a short project write-up. Push everything to GitHub. |
 
 ---
 
@@ -164,6 +164,7 @@ python-dotenv
 torch
 transformers
 sentencepiece
+sentence-transformers
 scikit-learn
 nltk
 simplemma
@@ -171,7 +172,6 @@ streamlit
 plotly
 wordcloud
 apscheduler
-joblib
 ```
 
 ---
@@ -181,9 +181,10 @@ joblib
 This project runs NLP **directly on Danish** — there is no translation step:
 
 - **Sentiment** uses a fine-tuned Danish transformer (Hugging Face `transformers`), scoring the original `title`/`summary`. The 3-class model maps to a label and a −1..+1 score (`P(positive) − P(negative)`). The model (~0.4 GB) downloads on first run and is cached locally.
-- **Topic modelling** fits **NMF over a TF-IDF** view of the Danish text. Tokens are lemmatized to Danish base forms with `simplemma` (so inflected forms like `regeringen`/`regeringens` collapse onto `regering`), and Danish stop words are filtered — a union of NLTK's Danish list and an extended list in `data/danish_stopwords.txt`. NMF over TF-IDF was chosen over LDA because it yields sharper, more coherent topics on this small corpus of short headlines. Topic terms, word clouds, and the auto-generated top-term topic names are therefore Danish.
+- **Topic classification** uses the fixed **IPTC Media Topics** taxonomy. A multilingual sentence-transformer embeds each Danish article and each of the 17 Danish category phrases, and the article is assigned the category with the highest cosine similarity — zero training data, one forward pass per article. Articles whose best match falls below a confidence floor are bucketed as `Øvrige`.
+- **Word clouds** are built per category from a **TF-IDF** over each category's Danish text, tokenized with a `simplemma` lemmatizer (so inflected forms like `regeringen`/`regeringens` collapse onto `regering`) and filtered against Danish stop words — a union of NLTK's Danish list and an extended list in `data/danish_stopwords.txt`. The terms are therefore lemmatized Danish.
 
-An earlier design translated everything to English first (DeepL) so English-only tools like VADER could be used; that translate-first stage has since been removed in favour of native Danish models, which avoids translation drift and the external API dependency. Topic modelling likewise started as LDA over raw word counts before moving to NMF over TF-IDF on lemmatized tokens.
+The design has evolved twice. An early version translated everything to English first (DeepL) so English-only tools like VADER could be used; that translate-first stage was removed in favour of native Danish models, avoiding translation drift and the external API dependency. Topics were then modelled with LDA, then NMF over TF-IDF, and finally replaced by IPTC embedding-similarity classification — which yields stable, human-readable categories and is far cheaper on CPU than per-label zero-shot NLI.
 
 ---
 

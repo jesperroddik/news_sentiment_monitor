@@ -1,14 +1,14 @@
 -- Danish News Sentiment Monitor — analysis queries
 -- These answer the "Key Questions" from the README and back the dashboard.
 
--- 1. Which topics are dominating over the past week?
-SELECT topic_id,
+-- 1. Which categories are dominating over the past week?
+SELECT iptc_category,
        COUNT(*)                  AS article_count,
        ROUND(AVG(sentiment_score)::numeric, 3) AS avg_sentiment
 FROM articles
 WHERE published_at >= now() - INTERVAL '7 days'
-  AND topic_id IS NOT NULL
-GROUP BY topic_id
+  AND iptc_category IS NOT NULL
+GROUP BY iptc_category
 ORDER BY article_count DESC;
 
 -- 2. Which sources publish the most negative / most positive content?
@@ -22,35 +22,35 @@ WHERE sentiment_score IS NOT NULL
 GROUP BY source
 ORDER BY avg_sentiment ASC;   -- most negative first
 
--- 3. Per-topic sentiment by source — does coverage diverge or align?
-SELECT topic_id,
+-- 3. Per-category sentiment by source — does coverage diverge or align?
+SELECT iptc_category,
        source,
        COUNT(*)                                 AS article_count,
        ROUND(AVG(sentiment_score)::numeric, 3)  AS avg_sentiment
 FROM articles
-WHERE topic_id IS NOT NULL AND sentiment_score IS NOT NULL
-GROUP BY topic_id, source
-ORDER BY topic_id, avg_sentiment;
+WHERE iptc_category IS NOT NULL AND sentiment_score IS NOT NULL
+GROUP BY iptc_category, source
+ORDER BY iptc_category, avg_sentiment;
 
--- 4. Topic spikes today, and whether they are driven by one outlet.
-SELECT topic_id,
+-- 4. Category spikes today, and whether they are driven by one outlet.
+SELECT iptc_category,
        COUNT(*)                       AS articles_today,
        COUNT(DISTINCT source)         AS distinct_sources
 FROM articles
 WHERE published_at >= date_trunc('day', now())
-  AND topic_id IS NOT NULL
-GROUP BY topic_id
+  AND iptc_category IS NOT NULL
+GROUP BY iptc_category
 ORDER BY articles_today DESC;
 
--- 5. Sentiment distribution per topic (share of pos/neutral/neg).
-SELECT topic_id,
+-- 5. Sentiment distribution per category (share of pos/neutral/neg).
+SELECT iptc_category,
        sentiment_label,
        COUNT(*)                                                AS n,
-       ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (PARTITION BY topic_id), 1) AS pct
+       ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (PARTITION BY iptc_category), 1) AS pct
 FROM articles
-WHERE topic_id IS NOT NULL AND sentiment_label IS NOT NULL
-GROUP BY topic_id, sentiment_label
-ORDER BY topic_id, sentiment_label;
+WHERE iptc_category IS NOT NULL AND sentiment_label IS NOT NULL
+GROUP BY iptc_category, sentiment_label
+ORDER BY iptc_category, sentiment_label;
 
 -- 6. Daily sentiment trend per source (drives the dashboard line chart).
 SELECT date_trunc('day', published_at) AS day,

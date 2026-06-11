@@ -1,7 +1,7 @@
 """RSS collection + one-off pipeline entry point.
 
 Running ``python src/fetch.py`` performs the full one-off pipeline:
-    fetch -> sentiment -> topic assign -> store.
+    fetch -> store -> sentiment -> IPTC classify.
 
 ``run_pipeline()`` is reused by ``scheduler.py`` for the periodic job.
 """
@@ -49,11 +49,19 @@ def clean_text(raw: str | None) -> str:
     Unescape happens *before* tag stripping so that feeds delivering
     HTML-escaped markup (e.g. Kristeligt Dagblad sends ``&lt;p&gt;`` in its
     summaries) get their tags removed too, instead of leaking ``<p>``/``dir``
-    /``ltr`` noise into the NLP once unescaped.
+    /``ltr`` noise into the NLP once unescaped. Unescaping repeats until stable
+    so *double*-escaped entities (a feed sending ``&amp;nbsp;``) fully decode —
+    otherwise ``&nbsp;`` survives one pass and leaks the literal token ``nbsp``.
     """
     if not raw:
         return ""
-    no_tags = _TAG_RE.sub(" ", unescape(raw))
+    text = unescape(raw)
+    for _ in range(2):  # decode any remaining layer of double-escaping
+        decoded = unescape(text)
+        if decoded == text:
+            break
+        text = decoded
+    no_tags = _TAG_RE.sub(" ", text)
     return _WS_RE.sub(" ", no_tags).strip()
 
 
@@ -163,10 +171,10 @@ def store_articles(articles: list[dict]) -> int:
 
 
 def run_pipeline() -> None:
-    """Full one-off pipeline: fetch -> sentiment -> topic assign."""
+    """Full one-off pipeline: fetch -> store -> sentiment -> IPTC classify."""
     # Imported lazily so each stage can be developed/run in isolation.
+    import iptc
     import sentiment
-    import topics
 
     check_sources()
     inserted = store_articles(fetch_feeds())
@@ -174,7 +182,7 @@ def run_pipeline() -> None:
         print("[pipeline] no new articles; running NLP on any pending rows anyway")
 
     sentiment.score_pending()
-    topics.assign_pending()
+    iptc.classify_pending()   # IPTC top-level category — the topic axis
     print("[pipeline] done")
 
 
