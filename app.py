@@ -124,6 +124,23 @@ def render_story(s: dict) -> None:
     st.markdown(meta, unsafe_allow_html=True)
 
 
+def overview_built_at(overview: dict | None) -> str | None:
+    """Local-time string for when the snapshot was built, or None.
+
+    ``generated_at`` is stored as an ISO-8601 UTC string; ``astimezone()`` with
+    no argument converts it to the machine's local timezone (no tzdata needed).
+    """
+    from datetime import datetime
+
+    raw = (overview or {}).get("generated_at")
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw).astimezone().strftime("%d-%m-%Y %H:%M")
+    except ValueError:
+        return None
+
+
 def render_overview(overview: dict | None, per_row: int = 3) -> None:
     """Render the 'Nyhedsoverblik' banner from a stored snapshot."""
     topics = (overview or {}).get("topics") if overview else None
@@ -152,12 +169,17 @@ if df.empty:
     st.stop()
 
 # --- Nyhedsoverblik (digest af de vigtigste historier pr. emne) ------------
+overview = load_overview()
 st.subheader("📰 Nyhedsoverblik")
-st.caption(
+caption = (
     "De vigtigste historier pr. emne lige nu — flest kilder først, med et "
     "kort dansk resumé. Bygges med pipelinen og påvirkes ikke af filtrene."
 )
-render_overview(load_overview())
+built = overview_built_at(overview)
+if built:
+    caption += f" Sidst opdateret: {built}."
+st.caption(caption)
+render_overview(overview)
 st.divider()
 
 # --- Sidebjælke-filtre -----------------------------------------------------
