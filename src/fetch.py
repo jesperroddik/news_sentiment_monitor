@@ -111,18 +111,11 @@ def fetch_feeds(feeds: dict[str, list[str]] = RSS_FEEDS) -> list[dict]:
     return articles
 
 
-def check_sources() -> dict[str, bool]:
-    """Ping every configured feed and report which are reachable.
-
-    Run at start-up so a dead feed surfaces immediately rather than silently
-    contributing zero articles. Returns ``{feed_url: healthy?}``. Raises
-    ``RuntimeError`` if *every* feed is down — there is nothing to do.
-    """
+def _probe_sources() -> dict[str, bool]:
+    """One pass: ping every RSS feed and probe every scrape page. ``{url: ok}``."""
     import scrape
 
     status: dict[str, bool] = {}
-    print("[startup] checking sources...")
-
     for source, urls in RSS_FEEDS.items():
         for url in urls:
             parsed = feedparser.parse(url)
@@ -136,12 +129,39 @@ def check_sources() -> dict[str, bool]:
 
     # Scraped sources (DR, TV2) — validate their embedded-JSON marker is present.
     status.update(scrape.check_sources())
-
-    healthy = sum(status.values())
-    print(f"[startup] {healthy}/{len(status)} sources healthy")
-    if healthy == 0:
-        raise RuntimeError("No healthy news sources — aborting pipeline.")
     return status
+
+
+def check_sources(retries: int = 1, backoff: float = 15.0) -> dict[str, bool]:
+    """Ping every configured source and report which are reachable.
+
+    Run at start-up so a dead feed surfaces immediately rather than silently
+    contributing zero articles. Returns ``{source_url: healthy?}``.
+
+    If *every* source is unreachable it retries after ``backoff`` seconds before
+    giving up: when all eight hosts fail to resolve at once (``getaddrinfo
+    failed``) it is a transient machine-level DNS/network blip — a Wi-Fi
+    reconnect or a sleep/wake on this 2-hourly scheduled job — not eight
+    simultaneous outages. A short retry rides over the blip instead of raising
+    and firing a false-alarm failure toast. Raises ``RuntimeError`` only if
+    *every* source is still down after the retries.
+    """
+    import time
+
+    print("[startup] checking sources...")
+    for attempt in range(retries + 1):
+        status = _probe_sources()
+        healthy = sum(status.values())
+        print(f"[startup] {healthy}/{len(status)} sources healthy")
+        if healthy > 0:
+            return status
+        if attempt < retries:
+            print(f"[startup] all sources unreachable — likely a transient "
+                  f"network blip; retrying in {backoff:.0f}s "
+                  f"({attempt + 1}/{retries})...")
+            time.sleep(backoff)
+
+    raise RuntimeError("No healthy news sources — aborting pipeline.")
 
 
 def store_articles(articles: list[dict]) -> int:
