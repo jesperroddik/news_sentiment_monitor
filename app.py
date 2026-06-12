@@ -157,7 +157,7 @@ def render_overview(overview: dict | None, per_row: int = 3) -> None:
                     render_story(story)
 
 
-st.title("🇩🇰 Dansk Nyhedssentiment-monitor")
+st.title("Dansk Nyhedssentiment-monitor")
 st.caption(
     "Emnesporing og sentimentanalyse på tværs af DR, TV2, Politiken, Information, "
     "Jyllands-Posten, Berlingske og Kristeligt Dagblad."
