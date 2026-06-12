@@ -15,6 +15,7 @@ from pathlib import Path
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+import streamlit.components.v1 as components
 from wordcloud import WordCloud
 
 # Gør src/ importerbar, så vi kan genbruge den delte engine.
@@ -23,6 +24,14 @@ import db  # noqa: E402
 import topics  # noqa: E402
 
 st.set_page_config(page_title="Dansk Nyhedssentiment-monitor", layout="wide")
+
+# The whole app is Danish, but Streamlit ships the page as <html lang="en">,
+# so screen readers mispronounce it. A 0-height component runs same-origin and
+# can reach the parent document to correct the language tag.
+components.html(
+    "<script>window.parent.document.documentElement.lang = 'da';</script>",
+    height=0,
+)
 
 # DB-værdier (engelske) -> danske visningsetiketter.
 SENTIMENT_DA = {"positive": "Positiv", "neutral": "Neutral", "negative": "Negativ"}

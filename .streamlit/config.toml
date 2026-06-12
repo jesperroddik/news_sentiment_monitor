@@ -1,0 +1,10 @@
+# Pin the dark theme. The dashboard (and its transparent-background word clouds)
+# is designed for a dark background; without this Streamlit follows the visitor's
+# OS light/dark setting ("System"), and on a light background the word-cloud
+# colours wash out. See README / app.py word-cloud styling.
+[theme]
+base = "dark"
+
+# Portfolio app — don't phone usage stats home to Streamlit/Fivetran.
+[browser]
+gatherUsageStats = false
