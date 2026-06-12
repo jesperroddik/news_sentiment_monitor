@@ -102,8 +102,8 @@ def iptc_clouds(top_k: int = 6, n: int = 40) -> dict[str, object]:
         if not freqs:
             continue
         wc = WordCloud(
-            width=480, height=320, background_color="white",
-            colormap="viridis", prefer_horizontal=0.9,
+            width=480, height=320, mode="RGBA", background_color=None,
+            colormap="Set2", prefer_horizontal=0.9,
         ).generate_from_frequencies(freqs)
         images[cat] = wc.to_array()
     return images
@@ -195,7 +195,7 @@ sources = st.sidebar.multiselect(
     "Kilde", sorted(df["source"].dropna().unique()), default=None
 )
 labels = st.sidebar.multiselect(
-    "Stemning", ["positive", "neutral", "negative"], default=None,
+    "Sentiment", ["positive", "neutral", "negative"], default=None,
     format_func=lambda x: SENTIMENT_DA[x],
 )
 selected_categories = st.sidebar.multiselect(
@@ -214,16 +214,6 @@ if selected_categories:
     mask &= df["iptc_category"].isin(selected_categories)
 
 fdf = df[mask]
-
-# --- Nøgletal --------------------------------------------------------------
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Artikler", f"{len(fdf):,}")
-avg = fdf["sentiment_score"].mean()
-c2.metric("Gns. stemning", f"{avg:+.3f}" if pd.notna(avg) else "—")
-c3.metric("Kategorier", int(fdf["iptc_category"].nunique()))
-c4.metric("Kilder", int(fdf["source"].nunique()))
-
-st.divider()
 
 # --- Emneskyer (ordsky pr. kategori) ---------------------------------------
 st.subheader("Emneskyer")
@@ -254,15 +244,15 @@ with left:
         st.info("Ingen kategoritildelinger endnu.")
 
 with right:
-    st.subheader("Stemning pr. kilde")
+    st.subheader("Sentiment pr. kilde")
     by_source = (
         fdf.dropna(subset=["sentiment_label"])
         .groupby(["source", "sentiment_label"]).size().reset_index(name="count")
     )
     if not by_source.empty:
-        by_source["Stemning"] = by_source["sentiment_label"].map(SENTIMENT_DA)
+        by_source["Sentiment"] = by_source["sentiment_label"].map(SENTIMENT_DA)
         fig = px.bar(
-            by_source, x="source", y="count", color="Stemning",
+            by_source, x="source", y="count", color="Sentiment",
             barmode="group",
             labels={"source": "Kilde", "count": "Antal"},
             color_discrete_map=SENTIMENT_FARVER,
@@ -271,9 +261,9 @@ with right:
     else:
         st.info("Ingen mærkede data endnu.")
 
-# --- Stemning pr. kilde og kategori (matrix) -------------------------------
-st.subheader("Stemning pr. kilde og kategori")
-st.caption("Gennemsnitlig stemningsscore (−1 til +1) for hver kilde pr. IPTC-kategori.")
+# --- Sentiment pr. kilde og kategori (matrix) -------------------------------
+st.subheader("Sentiment pr. kilde og kategori")
+st.caption("Gennemsnitlig sentimentscore (−1 til +1) for hver kilde pr. IPTC-kategori.")
 heat = fdf.dropna(subset=["iptc_category", "sentiment_score"]).copy()
 if not heat.empty:
     pivot = heat.pivot_table(
@@ -285,22 +275,22 @@ if not heat.empty:
         zmin=-1, zmax=1,
         aspect="auto",
         text_auto=".2f",
-        labels={"x": "Kategori", "y": "Kilde", "color": "Gns. stemning"},
+        labels={"x": "Kategori", "y": "Kilde", "color": "Gns. sentiment"},
     )
     fig.update_xaxes(type="category")
     st.plotly_chart(fig, use_container_width=True)
 else:
-    st.info("Ingen stemningsdata pr. kategori endnu.")
+    st.info("Ingen sentimentdata pr. kategori endnu.")
 
 # --- Artikeltabel ----------------------------------------------------------
 st.subheader("Artikler")
 table = fdf.copy()
-table["stemning"] = table["sentiment_label"].map(SENTIMENT_DA)
+table["sentiment"] = table["sentiment_label"].map(SENTIMENT_DA)
 table["kategori"] = table["iptc_category"].fillna("")
 st.dataframe(
     table[
         ["published_at", "source", "title",
-         "sentiment_score", "stemning", "kategori", "url"]
+         "sentiment_score", "sentiment", "kategori", "url"]
     ],
     use_container_width=True,
     hide_index=True,
@@ -308,8 +298,8 @@ st.dataframe(
         "published_at": st.column_config.DatetimeColumn("Udgivet", format="YYYY-MM-DD HH:mm"),
         "source": "Kilde",
         "title": "Overskrift",
-        "sentiment_score": st.column_config.NumberColumn("Stemningsscore", format="%.3f"),
-        "stemning": "Stemning",
+        "sentiment_score": st.column_config.NumberColumn("Sentimentscore", format="%.3f"),
+        "sentiment": "Sentiment",
         "kategori": "Kategori",
         "url": st.column_config.LinkColumn("Link"),
     },
