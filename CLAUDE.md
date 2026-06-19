@@ -24,7 +24,11 @@ src/
 sql/
   schema.sql     # articles table (sentiment_*, iptc_*, digest) + news_overview snapshot table
   analysis_queries.sql
+scripts/
+  scheduled_run.py # Windows Task Scheduler launcher: runs the pipeline once under pythonw, logs to logs/pipeline.log, toasts on failure
 app.py           # Streamlit dashboard
+.streamlit/
+  config.toml    # pins dark theme (word clouds need a dark bg) + disables usage stats
 .env             # DATABASE_URL (see .env.example)
 requirements.txt
 ```
@@ -46,6 +50,9 @@ The digest stage (`digest.py`/`overview.py`) needs a local **Ollama** install �
 | One-off fetch + process | `python src/fetch.py` |
 | Launch dashboard | `streamlit run app.py` |
 | Run scheduler (every 2 h) | `python src/scheduler.py` |
+| Scheduled one-shot (Windows task) | `pythonw scripts/scheduled_run.py` |
+
+On this Windows machine, prefer `python -m streamlit run app.py` (the bare `streamlit` launcher is flaky here), and use PowerShell equivalents for the setup steps (`Copy-Item .env.example .env`; pipe `schema.sql` to `psql`).
 
 ## Architecture
 
@@ -60,6 +67,7 @@ The pipeline runs in this order: **fetch → store → sentiment → IPTC classi
 - `digest.py` writes a **one-sentence Danish digest** of a single story via a **local LLM (Ollama)** — kept local/no-external-API like the rest of the NLP. `digest_text(title, summary)` returns `(sentence, from_llm)`; it prompts `OLLAMA_MODEL` (default `gemma2:2b`) over `localhost:11434` via the `ollama` package. If Ollama isn't installed/running it logs once and falls back to the publisher teaser's first sentence with `from_llm=False`, so the pipeline degrades instead of crashing (same stance as `scrape.py`). The `ollama` import is deferred so the module imports cheaply even without the package. **Ollama is an external prerequisite** (install the app + `ollama pull gemma2:2b`), unlike the pip-only Hugging Face models.
 - `overview.py` builds the dashboard's **"Nyhedsoverblik"** snapshot. `build_overview()` loads recent classified articles (last 72 h, `Øvrige` excluded), takes the **top-6 most prevalent IPTC categories**, and within each clusters near-duplicate stories across outlets by **embedding cosine similarity** (reusing `iptc._model()` — no second model load; `sklearn.cluster.AgglomerativeClustering`, `metric="cosine"`, `distance_threshold≈0.35`). Clusters rank by **distinct-source count then recency** — so "importance" = multi-source coverage, with singletons falling back to recency — and the top 3 per topic are kept. The representative (longest summary, tie-broken by earliest publish) gets a digest via `digest.py`, **cached on `articles.digest` only when LLM-generated** (a teaser fallback stays un-cached so the next run retries Ollama). The whole thing is written as one JSON blob to `news_overview`; the pipeline wraps this stage in try/except so a digest hiccup can't fail the run.
 - `app.py` reads directly from Neon; no local state. Expects the pipeline columns (`sentiment_score`, `sentiment_label`, `iptc_category`) to be populated before launch; the UI is in Danish and shows, **at the very top, the "Nyhedsoverblik" digest banner** (`load_overview` → the latest `news_overview` snapshot, rendered as top-6 topics × 3 stories, each a linked digest sentence + covering sources + sentiment chip + `N kilder` coverage count; this banner is a global "what's happening now" view and is **not** affected by the sidebar filters), then **per-IPTC-category word clouds** (`iptc_clouds`: the 6 most prevalent categories, each a TF-IDF over that category's Danish title+summary, lemmatized via `topics.lemmatize_tokens`, `Øvrige` excluded), an IPTC **category**-distribution bar chart, a source×category mean-sentiment heatmap, a category filter, and a filterable article table (no English translation displayed). Editing `topics.py`/`iptc.py`/`db.py`/`overview.py`/`digest.py` requires a Streamlit restart (already-imported modules are cached in `sys.modules`); editing `app.py` itself hot-reloads.
+- `scheduler.py` (APScheduler `BlockingScheduler`, UTC) runs the full pipeline immediately on startup, then every 2 h, **and** a daily retention sweep (`db.purge_old_articles()`, `RETENTION_MONTHS`) at 03:00 UTC. Both jobs swallow exceptions so one failure can't kill the scheduler. For unattended runs on Windows, `scripts/scheduled_run.py` is the production entry point instead — it runs one pipeline pass under `pythonw` (redirecting `sys.stdout`/`stderr` to `logs/pipeline.log`, since `pythonw` leaves them `None`), pops a winotify toast and exits non-zero on failure.
 
 ## Key Constraints
 
